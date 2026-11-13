@@ -27,6 +27,11 @@ Work these in order. Each one is done only when its criterion holds.
 Status as of 13 Nov 2026, ~15:30 IST.
 
 - **Entered as a second agent, Bones-Steal** (Steal the VFY only), on the same endpoint with its own secret `AGENT_GAMES_HMAC_SECRET_STEAL` (`148a8b7`). First practice turn (16:12 IST): we played EXTRACT 10 with a Policy proof in 1.5 s, but it failed the schema check because `idempotencyKey` must be a valid UUID; fixed with a UUID v5. The card also lists "Policy proof transaction confirmed on-chain"; if that fails next, we need Kurier submission and `proofReference`.
+- **Practice passed (13 Nov, 16:20 IST, `fb79722`):** 3 turns, each "Correct decision" with the proof verified, about 1.6 s per turn against a 15 s practice window. Public signal 1 equals our registered commitment. What the cards showed:
+  - Practice envelopes have **no `strategyCommitment`** and add a `priorTurnHash` field. We prove against the current commitment, and the platform accepts that.
+  - "Expected" on the card is the reference opponent's action, not what we should have played.
+  - Practice proofs aren't put on-chain; the platform makes the attestations for competition turns, so no Kurier is needed.
+  - Resolver data points, turn 1 from 100/100, our EXTRACT 10: against HOLD we end at 110, against FORTIFY at 104 (both match the published numbers), against EXTRACT at 102 (the reference opponent probably extracts 8).
 - **Deployed in `820fb4e`** (13 Nov, 16:02 IST). The startup log shows `stealCommitment` with the registered hash. Earlier status: It lives in `src/steal/` on the same service, and `/agent` routes on `eventId`. 78/78 tests pass. The policy is checked against the circuit's witness calculation, and the Policy proofs verify against `vfy-policy_vk.json`.
 - **Strategy params are set** in `.env` and on Render (13 Nov, ~16:10 IST). The user delegated the choice to the model after a simulated search, and the decision and its reasoning are recorded in `docs/private/`. The values never go in git or logs.
 - **Gatekeeper Round 2 is live in bursts:** a scored task (`task_R02_…`, `VK_SUBSTITUTION`, proof attached, 0.8 s) arrived at 15:09 IST while the page showed "NO LIVE ROUND". Don't trust the page alone when timing a deploy.
