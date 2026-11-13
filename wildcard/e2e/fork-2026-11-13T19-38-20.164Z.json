@@ -1,0 +1,37 @@
+{
+  "startedAt": "2026-11-13T19:38:20.164Z",
+  "wallet": "0x13B7bcB78Be465d435784936Fda8DFb56361d44e",
+  "jobId": "c8c21220-df99-11f1-bb46-22f5290c9c2d",
+  "vkHash": "0x8e936d8e6c7d3b00cf7089077d1184143c509d77f2f0ff260f4825dd5c704c49",
+  "aggregationId": 65040,
+  "leaf": "0x5ab96204e641039dd05a6578dccff338584362d7c90f2d1b4dc7d750673e8f69",
+  "numberOfLeaves": 2,
+  "leafIndex": 0,
+  "zkVerifyTx": "https://zkverify-testnet.subscan.io/extrinsic/0xb023ea2dcf6a3d09786be85a66252d7853ca6b688b72f4e34efb4a19e9447564",
+  "transitions": [
+    {
+      "status": "Submitted",
+      "s": 0.271
+    },
+    {
+      "status": "IncludedInBlock",
+      "s": 5.549
+    },
+    {
+      "status": "AggregationPending",
+      "s": 27.2
+    },
+    {
+      "status": "Aggregated",
+      "s": 172.555
+    }
+  ],
+  "secondsSubmitToLiveOnBase": 172.857,
+  "payGasUsed": "102573",
+  "negativeChecks": {
+    "replay": "NonceAlreadyUsed",
+    "bigger": "ProofNotAggregated",
+    "other": "ProofNotAggregated"
+  },
+  "ok": true
+}

@@ -20,7 +20,8 @@
     "@noble/hashes": "^2.4.0",
     "better-sqlite3": "^13.1.1",
     "poseidon-lite": "^0.3.0",
-    "snarkjs": "0.7.5"
+    "snarkjs": "0.7.5",
+    "viem": "2.57.13"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",

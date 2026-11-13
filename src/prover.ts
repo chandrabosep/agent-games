@@ -21,8 +21,11 @@ export class Prover {
   private readonly zkey: string;
   private readonly vk: unknown;
 
-  /** `circuit` names the artifacts in circuitsDir: gatekeeper (Event 01) or vfy-policy (Event 02). */
-  constructor(circuitsDir: string, circuit: 'gatekeeper' | 'vfy-policy' = 'gatekeeper') {
+  /**
+   * `circuit` names the artifacts in circuitsDir: gatekeeper (Event 01), vfy-policy (Event 02),
+   * or policy_payment (Wildcard, artifacts in wildcard/artifacts).
+   */
+  constructor(circuitsDir: string, circuit: 'gatekeeper' | 'vfy-policy' | 'policy_payment' = 'gatekeeper') {
     this.wasm = join(circuitsDir, `${circuit}.wasm`);
     this.zkey = join(circuitsDir, `${circuit}_final.zkey`);
     this.vk = JSON.parse(readFileSync(join(circuitsDir, `${circuit}_vk.json`), 'utf8'));
