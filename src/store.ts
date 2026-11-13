@@ -72,6 +72,13 @@ export class Store {
         approved_at TEXT NOT NULL,
         PRIMARY KEY (mode, proof_ref)
       );
+      CREATE TABLE IF NOT EXISTS steal_turns (
+        turn_key      TEXT PRIMARY KEY,
+        mode          TEXT NOT NULL,
+        answered_at   TEXT NOT NULL,
+        envelope      TEXT NOT NULL,
+        response_body TEXT NOT NULL
+      );
     `);
     // Added after v1 shipped: migrate an existing database in place.
     const columns = new Set((this.db.pragma('table_info(tasks)') as { name: string }[]).map((c) => c.name));
@@ -187,6 +194,25 @@ export class Store {
         new Date().toISOString(),
         args.taskId,
       );
+  }
+
+  /** Steal the VFY: the exact body sent for a Turn, so a Retry gets it back unchanged. */
+  stealResponse(turnKey: string): string | null {
+    const row = this.db.prepare('SELECT response_body FROM steal_turns WHERE turn_key = ?').get(turnKey) as
+      | { response_body: string }
+      | undefined;
+    return row?.response_body ?? null;
+  }
+
+  /** Records a Turn's body unless one is already stored; returns the body that is stored. */
+  saveStealResponse(args: { turnKey: string; mode: string; envelope: string; responseBody: string }): string {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO steal_turns (turn_key, mode, answered_at, envelope, response_body)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(args.turnKey, args.mode, new Date().toISOString(), args.envelope, args.responseBody);
+    return this.stealResponse(args.turnKey) ?? args.responseBody;
   }
 
   close(): void {

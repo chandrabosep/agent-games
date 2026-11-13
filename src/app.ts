@@ -7,10 +7,12 @@ import { candidateKeys, sign, SIGNATURE_HEADER, verify } from './hmac.js';
 import { log } from './log.js';
 import { Prover } from './prover.js';
 import { Store } from './store.js';
+import { StealTurns } from './steal/turns.js';
 
 const MAX_BODY_BYTES = 1_000_000;
 const PREFLIGHT = 'agent-games.preflight.v1';
 const GATEKEEPER = 'agent-games.proof-gatekeeper.v1';
+const STEAL_EVENT = 'steal-the-vfy';
 
 const EXPLANATIONS_SHOWN = 100;
 
@@ -28,7 +30,7 @@ export interface AppOptions {
 
 /**
  * Transport: one handler on every path. GET is the health check; POST is
- * HMAC-verified on the raw body, then routed by the body's `type`.
+ * HMAC-verified on the raw body, then routed by the body's `type` (or `eventId` for Steal the VFY).
  */
 export function createApp(config: Config, options: AppOptions = {}): App {
   const store = new Store(config.dataDir);
@@ -40,6 +42,13 @@ export function createApp(config: Config, options: AppOptions = {}): App {
     proofBudgetMs: config.proofBudgetMs,
     deadlineMarginMs: config.deadlineMarginMs,
     onAnswered: explanations ? (task) => explanations.enqueue(task) : undefined,
+  });
+  const steal = new StealTurns({
+    store,
+    prover: new Prover(config.circuitsDir, 'vfy-policy'),
+    keyring: config.keyring,
+    proofBudgetMs: config.stealProofBudgetMs,
+    deadlineMarginMs: config.deadlineMarginMs,
   });
   const keys = config.hmacSecret ? candidateKeys(config.hmacSecret) : [];
   if (keys.length === 0) log('config.warning', { message: 'AGENT_GAMES_HMAC_SECRET not set; POSTs will get 401' });
@@ -86,6 +95,9 @@ export function createApp(config: Config, options: AppOptions = {}): App {
     if (envelope.type === PREFLIGHT) {
       log('preflight', { agentId: envelope.agent_id });
       return send(res, 200, JSON.stringify({ ok: true, protocolVersion: 'v1' }), key);
+    }
+    if (envelope.eventId === STEAL_EVENT) {
+      return send(res, 200, await steal.handle(envelope, raw.toString('utf8')), key);
     }
     if (envelope.type === GATEKEEPER) {
       return send(res, 200, await gatekeeper.handle(envelope, raw.toString('utf8')), key);

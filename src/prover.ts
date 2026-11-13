@@ -7,7 +7,7 @@ import * as snarkjs from 'snarkjs';
 export interface ProofResult {
   proof: unknown;
   publicSignals: string[];
-  /** Whether the proof verified locally against circuits/gatekeeper_vk.json. */
+  /** Whether the proof verified locally against the circuit's published VK. */
   locallyVerified: boolean;
   ms: number;
 }
@@ -21,17 +21,18 @@ export class Prover {
   private readonly zkey: string;
   private readonly vk: unknown;
 
-  constructor(circuitsDir: string) {
-    this.wasm = join(circuitsDir, 'gatekeeper.wasm');
-    this.zkey = join(circuitsDir, 'gatekeeper_final.zkey');
-    this.vk = JSON.parse(readFileSync(join(circuitsDir, 'gatekeeper_vk.json'), 'utf8'));
+  /** `circuit` names the artifacts in circuitsDir: gatekeeper (Event 01) or vfy-policy (Event 02). */
+  constructor(circuitsDir: string, circuit: 'gatekeeper' | 'vfy-policy' = 'gatekeeper') {
+    this.wasm = join(circuitsDir, `${circuit}.wasm`);
+    this.zkey = join(circuitsDir, `${circuit}_final.zkey`);
+    this.vk = JSON.parse(readFileSync(join(circuitsDir, `${circuit}_vk.json`), 'utf8'));
   }
 
   /**
-   * Best effort: never throws, gives up after budgetMs. A failed Proof never
-   * changes the Decision (GLOSSARY: Decision).
+   * Best effort: never throws, gives up after budgetMs. Gatekeeper: a failed Proof
+   * never changes the Decision. Steal the VFY: a failed Policy proof means a Fallback HOLD.
    */
-  async prove(inputs: Record<string, string>, budgetMs: number): Promise<ProveOutcome> {
+  async prove(inputs: Record<string, string | string[]>, budgetMs: number): Promise<ProveOutcome> {
     const start = Date.now();
     if (budgetMs <= 0) return { ok: false, error: 'no time budget left', ms: 0 };
     let timer: NodeJS.Timeout | undefined;

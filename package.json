@@ -12,12 +12,14 @@
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "steal:commitment": "tsx --env-file-if-exists=.env scripts/steal-commitment.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
     "@noble/hashes": "^2.4.0",
     "better-sqlite3": "^13.1.1",
+    "poseidon-lite": "^0.3.0",
     "snarkjs": "0.7.5"
   },
   "devDependencies": {

@@ -4,6 +4,7 @@ import { loadConfig } from './config.js';
 import { createClaudeExplainer, EXPLAINER_MODEL } from './explainer.js';
 import { log } from './log.js';
 import { shutdownProver } from './prover.js';
+import { commitmentHex } from './steal/keyring.js';
 
 const config = loadConfig();
 // Explanations are optional and off the scoring path: no key, no explanations.
@@ -19,6 +20,9 @@ server.listen(config.port, () => {
     taskIdEncoding: config.taskIdEncoding,
     hmacConfigured: config.hmacSecret !== '',
     explainer: explainer ? EXPLAINER_MODEL : 'off',
+    // Public by design (registered on the dashboard); never the Strategy params or Salt.
+    stealCommitment: config.keyring.current ? commitmentHex(config.keyring.current) : 'none',
+    stealPreviousCommitment: config.keyring.previous ? commitmentHex(config.keyring.previous) : 'none',
   });
 });
 

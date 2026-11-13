@@ -1,7 +1,7 @@
 # zkVerify Agent Games 2026 agent
 
-Our entry for [zkVerify Agent Games](https://agentgames.zkverify.io), starting with **Proof Gatekeeper**.
-Vocabulary lives in [GLOSSARY.md](GLOSSARY.md).
+Our entry for [zkVerify Agent Games](https://agentgames.zkverify.io): **Proof Gatekeeper** (Event 01) and
+**Steal the VFY** (Event 02), served by one agent. Vocabulary: [GLOSSARY-MAP.md](GLOSSARY-MAP.md) lists each event's glossary.
 
 ## Proof Gatekeeper agent (v1)
 
@@ -17,11 +17,18 @@ Decision, a Reason code, and (on Provable tasks) a Groth16 Proof from the offici
 | `src/prover.ts` | snarkjs proving with a time budget; never throws, never changes the Decision |
 | `src/store.ts` | SQLite: Seen-set per Mode, response cache for Retries, task logs and evidence |
 | `src/gatekeeper.ts` | One Task end to end |
-| `src/app.ts` | Transport: GET health check, HMAC on the raw body, routing by `type`, signed responses |
+| `src/app.ts` | Transport: GET health check, HMAC on the raw body, routing by `type` (Steal: `eventId`), signed responses |
 | `src/explainer.ts` | Claude (Opus 5.5) writes a plain-language Explanation of a Decision; returns null on any failure |
 | `src/explanations.ts` | Background queue for Explanations, and the public `/explanations` page |
+| `src/steal/policy.ts` | Steal the VFY: the vfy-policy circuit's rule, mirrored exactly (tested against the circuit) |
+| `src/steal/keyring.ts` | Steal the VFY: Strategy params + Salt from env → Strategy commitments we can prove against |
+| `src/steal/turns.ts` | Steal the VFY: one Turn end to end: Action, Policy proof, publicInputsHash, Fallback HOLD, Retries |
+| `scripts/steal-commitment.ts` | `npm run steal:commitment`: prints the commitment to register, never the params or Salt |
 
-Rules it follows: the Decision comes only from the Checks (a failed Proof costs 2 points, a wrong
+Steal the VFY plays whatever Strategy params the user sets in env; no model chooses or sees them, and no
+language model is involved in a Turn. An unprovable Turn gets a Fallback HOLD, never an unproven Action.
+
+Rules Gatekeeper follows: the Decision comes only from the Checks (a failed Proof costs 2 points, a wrong
 REJECT costs 3); only approved Proof references go in the Seen-set; Retries get the identical body;
 `proof_tx` is echoed back; no Kurier call while answering. An LLM never decides: with
 `ANTHROPIC_API_KEY` set, Claude writes an Explanation *after* each response is sent, shown at

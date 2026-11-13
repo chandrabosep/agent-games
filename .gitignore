@@ -7,3 +7,6 @@ dist/
 .DS_Store
 # local runtime state (seen-set, response cache)
 data/
+
+# Steal the VFY write-up, held back until the event ends (16 Nov)
+docs/private/
