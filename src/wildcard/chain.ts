@@ -144,3 +144,54 @@ export class VaultChain {
     return { txHash, status: receipt.status, gasUsed: receipt.gasUsed };
   }
 }
+
+/** VaultChain as the agent's ChainPort; reads the vault's fixed settings once. */
+export class VaultChainPort {
+  private infoP: Promise<VaultInfo> | null = null;
+
+  constructor(
+    private readonly c: VaultChain,
+    readonly chainId: number,
+  ) {}
+
+  get vault(): Address {
+    return this.c.vault;
+  }
+
+  private info(): Promise<VaultInfo> {
+    this.infoP ??= this.c.info().catch((e) => {
+      this.infoP = null;
+      throw e;
+    });
+    return this.infoP;
+  }
+
+  async policyCommitment(): Promise<bigint> {
+    return (await this.c.info()).policyCommitment;
+  }
+
+  async tokenBalance(): Promise<bigint> {
+    const { token } = await this.info();
+    return this.c.publicClient.readContract({ address: token, abi: ERC20_ABI, functionName: 'balanceOf', args: [this.c.vault] });
+  }
+
+  nonceUsed(nonce: bigint): Promise<boolean> {
+    return this.c.nonceUsed(nonce);
+  }
+
+  leafFor(recipient: Address, amount: bigint, nonce: bigint, validUntil: bigint): Promise<Hex> {
+    return this.c.leafFor(recipient, amount, nonce, validUntil);
+  }
+
+  async isAggregated(aggregationId: number, d: AggregationDetails): Promise<boolean> {
+    return this.c.isAggregated(await this.info(), aggregationId, d);
+  }
+
+  pay(
+    p: { recipient: Address; amount: bigint; nonce: bigint; validUntil: bigint },
+    aggregationId: number,
+    d: AggregationDetails,
+  ): Promise<{ txHash: Hex; status: 'success' | 'reverted' }> {
+    return this.c.pay(p, aggregationId, d);
+  }
+}

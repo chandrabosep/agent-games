@@ -47,6 +47,12 @@ after Rotate Secret, then run preflight. Don't deploy while a Gatekeeper round i
 **Still to settle in practice mode:** the `task_id` → field encoding (`TASK_ID_ENCODING`), how hex
 values are encoded, and which reason-code set is accepted.
 
+## Policy Vault (Wildcard, Event 03)
+
+An agent wallet that pays only what a hidden policy allows, with each payment proved in zero knowledge,
+verified on zkVerify and checked by a vault contract on Base. See [wildcard/README.md](wildcard/README.md).
+Code: `wildcard/` (circuit, contracts, scripts) and `src/wildcard/` (agent); routes under `/vault`.
+
 ## Other folders
 
 - `docs/research.md`: everything known about the competition (rules, schemas, scoring, circuit findings, open questions)

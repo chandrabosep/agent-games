@@ -8,6 +8,8 @@ import { log } from './log.js';
 import { Prover } from './prover.js';
 import { Store } from './store.js';
 import { StealTurns } from './steal/turns.js';
+import { SubmitError, type VaultAgent } from './wildcard/agent.js';
+import { renderVaultPage, type VaultPublicInfo } from './wildcard/page.js';
 
 const MAX_BODY_BYTES = 1_000_000;
 const PREFLIGHT = 'agent-games.preflight.v1';
@@ -26,6 +28,8 @@ export interface App {
 export interface AppOptions {
   /** Writes explanations in the background; absent means no explanations. */
   explainer?: Explainer;
+  /** Wildcard Policy Vault: public routes under /vault; absent means those paths return 404. */
+  vault?: { agent: VaultAgent; info: VaultPublicInfo };
 }
 
 /**
@@ -62,8 +66,11 @@ export function createApp(config: Config, options: AppOptions = {}): App {
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const urlPath = (req.url ?? '/').split('?')[0];
+    // Policy Vault (Wildcard): public, unsigned, and only on /vault paths.
+    if (urlPath === '/vault' || urlPath.startsWith('/vault/')) return handleVault(req, res, urlPath);
     if (req.method === 'GET' || req.method === 'HEAD') {
-      const path = (req.url ?? '/').split('?')[0];
+      const path = urlPath;
       if (path === '/explanations.json') {
         return send(res, 200, JSON.stringify(store.recent(EXPLANATIONS_SHOWN)));
       }
@@ -107,8 +114,45 @@ export function createApp(config: Config, options: AppOptions = {}): App {
     return send(res, 400, JSON.stringify({ error: 'unknown type' }), key);
   }
 
+  async function handleVault(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+    const vault = options.vault;
+    if (!vault) return send(res, 404, JSON.stringify({ error: 'Policy Vault is not configured' }));
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      if (path === '/vault' || path === '/vault/') {
+        return send(res, 200, renderVaultPage(vault.info), undefined, 'text/html; charset=utf-8');
+      }
+      if (path === '/vault/info') return send(res, 200, JSON.stringify(vault.info));
+      if (path === '/vault/requests') return send(res, 200, JSON.stringify(vault.agent.recent(50)));
+      const m = /^\/vault\/requests\/([0-9a-f-]{36})$/.exec(path);
+      if (m) {
+        const r = vault.agent.get(m[1]);
+        return r ? send(res, 200, JSON.stringify(r)) : send(res, 404, JSON.stringify({ error: 'no such request' }));
+      }
+      return send(res, 404, JSON.stringify({ error: 'not found' }));
+    }
+    if (req.method === 'POST' && path === '/vault/requests') {
+      const raw = await readBody(req);
+      if (raw === null || raw.length > 16_000) return send(res, 413, JSON.stringify({ error: 'body too large' }));
+      let body: unknown;
+      try {
+        body = JSON.parse(raw.toString('utf8'));
+      } catch {
+        return send(res, 400, JSON.stringify({ error: 'invalid json' }));
+      }
+      try {
+        const id = vault.agent.submit(body);
+        return send(res, 202, JSON.stringify({ id, status: `/vault/requests/${id}` }));
+      } catch (e) {
+        if (e instanceof SubmitError) return send(res, e.status, JSON.stringify({ error: e.message }));
+        throw e;
+      }
+    }
+    return send(res, 405, JSON.stringify({ error: 'method not allowed' }));
+  }
+
   async function stop(): Promise<void> {
     await new Promise<void>((r) => server.close(() => r()));
+    await options.vault?.agent.stop();
     await explanations?.stop();
     store.close();
   }
