@@ -14,6 +14,9 @@ import { commitmentHex, loadKeyring } from '../src/steal/keyring.js';
 
 const SECRET = 'b'.repeat(64);
 const KEY = Buffer.from(SECRET, 'utf8');
+// The Steal entry may be a second agent with its own secret on the same endpoint.
+const STEAL_SECRET = 'c'.repeat(64);
+const STEAL_KEY = Buffer.from(STEAL_SECRET, 'utf8');
 // Test-only strategy: extract 7 when opp > 100, fortify when self < 90.
 const STRATEGY = { STRATEGY_PARAMS: '7,90,100,0', STRATEGY_SALT: '5550001' };
 const PREVIOUS = { STRATEGY_PARAMS_PREVIOUS: '3,0,0,0', STRATEGY_SALT_PREVIOUS: '777' };
@@ -30,7 +33,14 @@ beforeAll(async () => {
   process.env.LOG_SILENT = '1';
   dataDir = mkdtempSync(join(tmpdir(), 'steal-test-'));
   app = createApp(
-    loadConfig({ AGENT_GAMES_HMAC_SECRET: SECRET, DATA_DIR: dataDir, CIRCUITS_DIR: 'circuits', ...STRATEGY, ...PREVIOUS }),
+    loadConfig({
+      AGENT_GAMES_HMAC_SECRET: SECRET,
+      AGENT_GAMES_HMAC_SECRET_STEAL: STEAL_SECRET,
+      DATA_DIR: dataDir,
+      CIRCUITS_DIR: 'circuits',
+      ...STRATEGY,
+      ...PREVIOUS,
+    }),
   );
   await new Promise<void>((r) => app.server.listen(0, r));
   url = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}/agent`;
@@ -58,9 +68,9 @@ function turnEnvelope(over: { matchId?: string; turn?: number; self?: string; op
   };
 }
 
-async function post(body: unknown, to = url) {
+async function post(body: unknown, to = url, key = KEY) {
   const raw = JSON.stringify(body);
-  const res = await fetch(to, { method: 'POST', headers: { 'x-agent-games-signature': sign(KEY, raw) }, body: raw });
+  const res = await fetch(to, { method: 'POST', headers: { 'x-agent-games-signature': sign(key, raw) }, body: raw });
   const text = await res.text();
   return { status: res.status, text, json: JSON.parse(text), sig: res.headers.get('x-agent-games-signature') };
 }
@@ -99,6 +109,15 @@ describe('Steal the VFY turns over /agent', () => {
     expect(hold.json.action).toEqual({ type: 'HOLD' });
     expect(hold.json.proof).toBeDefined();
     expect(hold.json.idempotencyKey).not.toBe(fortify.json.idempotencyKey);
+  });
+
+  it('accepts a Turn signed with the second agent\'s secret and signs back with it', async () => {
+    const res = await post(turnEnvelope({ matchId: '66666666-2222-4333-8444-555555555555' }), url, STEAL_KEY);
+    expect(res.status).toBe(200);
+    expect(res.sig).toBe(sign(STEAL_KEY, res.text));
+    expect(res.json.action).toEqual({ type: 'EXTRACT', amount: 7 });
+    const preflight = await post({ type: 'agent-games.preflight.v1', nonce: 's' }, url, STEAL_KEY);
+    expect(preflight.status).toBe(200);
   });
 
   it('answers a Retry with the identical body', async () => {

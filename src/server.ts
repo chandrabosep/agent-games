@@ -19,6 +19,7 @@ server.listen(config.port, () => {
     dataDir: config.dataDir,
     taskIdEncoding: config.taskIdEncoding,
     hmacConfigured: config.hmacSecret !== '',
+    stealHmacConfigured: config.stealHmacSecret !== '',
     explainer: explainer ? EXPLAINER_MODEL : 'off',
     // Public by design (registered on the dashboard); never the Strategy params or Salt.
     stealCommitment: config.keyring.current ? commitmentHex(config.keyring.current) : 'none',

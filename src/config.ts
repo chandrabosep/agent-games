@@ -6,6 +6,8 @@ import { EMPTY_KEYRING, loadKeyring, type Keyring } from './steal/keyring.js';
 export interface Config {
   /** Empty until the secret is rotated on the dashboard; POSTs get 401 meanwhile. */
   hmacSecret: string;
+  /** A second agent's secret on the same endpoint (Steal the VFY entered as its own agent); empty if none. */
+  stealHmacSecret: string;
   port: number;
   dataDir: string;
   circuitsDir: string;
@@ -25,6 +27,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   return {
     hmacSecret: (env.AGENT_GAMES_HMAC_SECRET ?? '').trim(),
+    stealHmacSecret: (env.AGENT_GAMES_HMAC_SECRET_STEAL ?? '').trim(),
     port: Number(env.PORT ?? 8080),
     dataDir: resolve(env.DATA_DIR ?? 'data'),
     circuitsDir: resolve(env.CIRCUITS_DIR ?? 'circuits'),

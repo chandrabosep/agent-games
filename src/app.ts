@@ -50,7 +50,8 @@ export function createApp(config: Config, options: AppOptions = {}): App {
     proofBudgetMs: config.stealProofBudgetMs,
     deadlineMarginMs: config.deadlineMarginMs,
   });
-  const keys = config.hmacSecret ? candidateKeys(config.hmacSecret) : [];
+  // Responses are signed with whichever key verified the request.
+  const keys = [config.hmacSecret, config.stealHmacSecret].filter((s) => s !== '').flatMap(candidateKeys);
   if (keys.length === 0) log('config.warning', { message: 'AGENT_GAMES_HMAC_SECRET not set; POSTs will get 401' });
 
   const server = createServer((req, res) => {
