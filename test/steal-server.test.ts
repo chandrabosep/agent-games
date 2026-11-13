@@ -94,9 +94,12 @@ describe('Steal the VFY turns over /agent', () => {
     expect(res.json.action).toEqual({ type: 'EXTRACT', amount: 7 });
     expect(res.json.policyProof.circuitVersion).toBe('v1');
     expect(res.json.policyProof.publicInputsHash).toBe(buildPublicInputsHash(CURRENT, env.matchId, 3, 95, 105, 2, 7));
-    expect(await snarkjs.groth16.verify(vk, res.json.public_signals, res.json.proof)).toBe(true);
-    expect(res.json.public_signals).toHaveLength(9);
-    expect(res.json.public_signals).toContain(BigInt(CURRENT).toString());
+    expect(await snarkjs.groth16.verify(vk, res.json.policyProof.public_signals, res.json.policyProof.proof)).toBe(true);
+    expect(res.json.policyProof.public_signals).toHaveLength(9);
+    expect(res.json.protocolVersion).toBe('v1');
+    expect(res.json.proof).toBeUndefined();
+    expect(res.json.public_signals).toBeUndefined();
+    expect(res.json.policyProof.public_signals).toContain(BigInt(CURRENT).toString());
     // The platform's schema rejects UUID-shaped strings without a valid version and variant.
     expect(res.json.idempotencyKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(typeof res.json.agentTimestamp).toBe('string');
@@ -105,10 +108,10 @@ describe('Steal the VFY turns over /agent', () => {
   it('omits amount for FORTIFY and HOLD', async () => {
     const fortify = await post(turnEnvelope({ turn: 4, self: '80', opp: '120' }));
     expect(fortify.json.action).toEqual({ type: 'FORTIFY' });
-    expect(fortify.json.proof).toBeDefined();
+    expect(fortify.json.policyProof.proof).toBeDefined();
     const hold = await post(turnEnvelope({ turn: 5, self: '100', opp: '100' }));
     expect(hold.json.action).toEqual({ type: 'HOLD' });
-    expect(hold.json.proof).toBeDefined();
+    expect(hold.json.policyProof.proof).toBeDefined();
     expect(hold.json.idempotencyKey).not.toBe(fortify.json.idempotencyKey);
   });
 
@@ -131,7 +134,7 @@ describe('Steal the VFY turns over /agent', () => {
   it('plays a Match paired under the previous commitment with that commitment', async () => {
     const res = await post(turnEnvelope({ matchId: '11111111-2222-4333-8444-555555555555', turn: 1, self: '100', opp: '100', hash: OLD }));
     expect(res.json.action).toEqual({ type: 'EXTRACT', amount: 3 });
-    expect(res.json.public_signals).toContain(BigInt(OLD).toString());
+    expect(res.json.policyProof.public_signals).toContain(BigInt(OLD).toString());
   });
 
   it('sends a Fallback HOLD without a proof for an unknown commitment', async () => {
@@ -139,14 +142,14 @@ describe('Steal the VFY turns over /agent', () => {
     const res = await post(turnEnvelope({ matchId, turn: 9, hash: `0x${'ab'.repeat(32)}` }));
     expect(res.status).toBe(200);
     expect(res.json.action).toEqual({ type: 'HOLD' });
-    expect(res.json.proof).toBeUndefined();
+    expect(res.json.policyProof.proof).toBeUndefined();
     expect(res.json.idempotencyKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
   it('proves a practice turn with no commitment hash against the current commitment', async () => {
     const res = await post(turnEnvelope({ matchId: '33333333-2222-4333-8444-555555555555', mode: 'practice', hash: null }));
     expect(res.json.action).toEqual({ type: 'EXTRACT', amount: 7 });
-    expect(res.json.public_signals).toContain(BigInt(CURRENT).toString());
+    expect(res.json.policyProof.public_signals).toContain(BigInt(CURRENT).toString());
   });
 });
 
@@ -171,7 +174,7 @@ describe('Steal the VFY when it cannot prove', () => {
     const env = turnEnvelope({ matchId: '44444444-2222-4333-8444-555555555555', turn: 2 });
     const late = await post(env, slow);
     expect(late.json.action).toEqual({ type: 'HOLD' });
-    expect(late.json.proof).toBeUndefined();
+    expect(late.json.policyProof.proof).toBeUndefined();
     const proven = await post(env);
     expect(proven.json.action).toEqual({ type: 'EXTRACT', amount: 7 });
     expect(proven.json.idempotencyKey).toBe(late.json.idempotencyKey);
@@ -183,6 +186,6 @@ describe('Steal the VFY when it cannot prove', () => {
     expect(preflight.json).toEqual({ ok: true, protocolVersion: 'v1' });
     const turn = await post(turnEnvelope({ matchId: '55555555-2222-4333-8444-555555555555' }), broken);
     expect(turn.json.action).toEqual({ type: 'HOLD' });
-    expect(turn.json.proof).toBeUndefined();
+    expect(turn.json.policyProof.proof).toBeUndefined();
   });
 });

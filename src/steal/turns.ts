@@ -85,9 +85,15 @@ export class StealTurns {
         body = {
           ...body,
           action: play.action === ACTION.EXTRACT ? { type: 'EXTRACT', amount: play.amount } : { type: ACTION_NAMES[play.action] },
-          policyProof: { circuitVersion: CIRCUIT_VERSION.wire, publicInputsHash: publicInputsHash(entry, turn, play) },
-          proof: outcome.result.proof,
-          public_signals: outcome.result.publicSignals,
+          // /build: "attach your policy proof (circuitVersion plus the Groth16 proof and public_signals)".
+          // Round 1 (13 Nov) turns with the proof at the top level drew the invalid-policy penalty on
+          // every turn; an agent sending exactly this nested shape scored clean in competition.
+          policyProof: {
+            circuitVersion: CIRCUIT_VERSION.wire,
+            publicInputsHash: publicInputsHash(entry, turn, play),
+            proof: outcome.result.proof,
+            public_signals: outcome.result.publicSignals,
+          },
           agentTimestamp: new Date(this.now()).toISOString(),
         };
       } else {
@@ -107,7 +113,7 @@ export class StealTurns {
       mode: turn.mode,
       action: fallback ? 'HOLD' : ACTION_NAMES[play.action],
       fallback,
-      policyProofAttached: 'proof' in body,
+      policyProofAttached: 'proof' in (body.policyProof as Record<string, unknown>),
       locallyVerified,
       proveMs,
       totalMs: this.now() - received,
@@ -212,6 +218,7 @@ function idempotencyKey(matchId: unknown, turnNumber: unknown): string {
 /** GLOSSARY: Fallback HOLD — never an unproven EXTRACT or FORTIFY. */
 function fallbackBody(matchId: unknown, turnNumber: unknown, received: number): Record<string, unknown> {
   return {
+    protocolVersion: 'v1',
     matchId,
     turn: turnNumber,
     action: { type: 'HOLD' },
