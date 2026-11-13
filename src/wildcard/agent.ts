@@ -158,7 +158,7 @@ export class VaultAgent {
   /** Our policy's commitment, and whether the vault stores the same one. */
   async selfCheck(): Promise<{ commitment: string; vaultMatches: boolean }> {
     const onChain = await this.d.chain.policyCommitment();
-    return { commitment: '0x' + this.commitment.toString(16), vaultMatches: onChain === this.commitment };
+    return { commitment: '0x' + this.commitment.toString(16).padStart(64, '0'), vaultMatches: onChain === this.commitment };
   }
 
   /** Accepts `{text}` (read by Claude) or `{recipient, amount, memo?}`. Returns the request id. */
