@@ -193,9 +193,19 @@ function publicInputsHash(entry: KeyringEntry, turn: Turn, play: Play): string {
   return `0x${Buffer.from(keccak_256(Buffer.from(words.join(''), 'hex'))).toString('hex')}`;
 }
 
-/** Derived from matchId and turn number only: stable across Retries, unique per Turn, whatever was played. */
+/** RFC 4122 URL namespace; any fixed namespace works, it only has to stay the same. */
+const UUID_NAMESPACE = Buffer.from('6ba7b8119dad11d180b400c04fd430c8', 'hex');
+
+/**
+ * A name-based UUID v5 of matchId and turn number only: stable across Retries,
+ * unique per Turn, whatever was played. The platform's schema requires a valid UUID.
+ */
 function idempotencyKey(matchId: unknown, turnNumber: unknown): string {
-  const h = createHash('sha256').update(`steal-the-vfy:${turnKeyOf(matchId, turnNumber)}`).digest('hex');
+  const name = Buffer.from(`steal-the-vfy:${turnKeyOf(matchId, turnNumber)}`, 'utf8');
+  const b = createHash('sha1').update(Buffer.concat([UUID_NAMESPACE, name])).digest().subarray(0, 16);
+  b[6] = (b[6] & 0x0f) | 0x50; // version 5
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const h = b.toString('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 

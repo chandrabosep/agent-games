@@ -97,7 +97,8 @@ describe('Steal the VFY turns over /agent', () => {
     expect(await snarkjs.groth16.verify(vk, res.json.public_signals, res.json.proof)).toBe(true);
     expect(res.json.public_signals).toHaveLength(9);
     expect(res.json.public_signals).toContain(BigInt(CURRENT).toString());
-    expect(typeof res.json.idempotencyKey).toBe('string');
+    // The platform's schema rejects UUID-shaped strings without a valid version and variant.
+    expect(res.json.idempotencyKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(typeof res.json.agentTimestamp).toBe('string');
   });
 
@@ -139,6 +140,7 @@ describe('Steal the VFY turns over /agent', () => {
     expect(res.status).toBe(200);
     expect(res.json.action).toEqual({ type: 'HOLD' });
     expect(res.json.proof).toBeUndefined();
+    expect(res.json.idempotencyKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
   it('proves a practice turn with no commitment hash against the current commitment', async () => {
