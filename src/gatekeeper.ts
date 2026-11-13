@@ -6,7 +6,7 @@ import { MalformedInput, parseMode, parseTaskInput, proofRefKey } from './parse.
 import type { Prover } from './prover.js';
 import { REASON_CODES, reasonCodeFor } from './reasonCodes.js';
 import type { Store } from './store.js';
-import type { TaskInput } from './types.js';
+import type { Decision, TaskInput } from './types.js';
 
 export interface GatekeeperDeps {
   store: Store;
@@ -16,7 +16,16 @@ export interface GatekeeperDeps {
   proofBudgetMs: number;
   /** Margin kept before `deadline_at` for signing and sending. */
   deadlineMarginMs: number;
+  /** Called once per newly answered Task (not Retries). Must not block; it is off the scoring path. */
+  onAnswered?: (answered: AnsweredTask) => void;
   now?: () => number;
+}
+
+export interface AnsweredTask {
+  taskId: string;
+  decision: Decision;
+  reasonCode: string;
+  input: Record<string, unknown> | null;
 }
 
 /** A Task's response body, as the exact string that gets signed and sent. */
@@ -116,6 +125,11 @@ export class Gatekeeper {
       proofError,
       ...timings,
     });
+    try {
+      this.deps.onAnswered?.({ taskId, decision: record.decision, reasonCode: record.reasonCode, input: rawInput });
+    } catch (e) {
+      log('task.on_answered_failed', { taskId, error: e instanceof Error ? e.message : String(e) });
+    }
     return responseBody;
   }
 

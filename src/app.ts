@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Config } from './config.js';
+import type { Explainer } from './explainer.js';
+import { ExplanationQueue, renderExplanationsPage } from './explanations.js';
 import { Gatekeeper } from './gatekeeper.js';
 import { candidateKeys, sign, SIGNATURE_HEADER, verify } from './hmac.js';
 import { log } from './log.js';
@@ -10,23 +12,34 @@ const MAX_BODY_BYTES = 1_000_000;
 const PREFLIGHT = 'agent-games.preflight.v1';
 const GATEKEEPER = 'agent-games.proof-gatekeeper.v1';
 
+const EXPLANATIONS_SHOWN = 100;
+
 export interface App {
   server: Server;
   store: Store;
+  /** Close the server, let the explainer finish its current Explanation, close the database. */
+  stop(): Promise<void>;
+}
+
+export interface AppOptions {
+  /** Writes explanations in the background; absent means no explanations. */
+  explainer?: Explainer;
 }
 
 /**
  * Transport: one handler on every path. GET is the health check; POST is
  * HMAC-verified on the raw body, then routed by the body's `type`.
  */
-export function createApp(config: Config): App {
+export function createApp(config: Config, options: AppOptions = {}): App {
   const store = new Store(config.dataDir);
+  const explanations = options.explainer ? new ExplanationQueue(store, options.explainer) : null;
   const gatekeeper = new Gatekeeper({
     store,
     prover: new Prover(config.circuitsDir),
     taskIdEncoding: config.taskIdEncoding,
     proofBudgetMs: config.proofBudgetMs,
     deadlineMarginMs: config.deadlineMarginMs,
+    onAnswered: explanations ? (task) => explanations.enqueue(task) : undefined,
   });
   const keys = config.hmacSecret ? candidateKeys(config.hmacSecret) : [];
   if (keys.length === 0) log('config.warning', { message: 'AGENT_GAMES_HMAC_SECRET not set; POSTs will get 401' });
@@ -40,6 +53,13 @@ export function createApp(config: Config): App {
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method === 'GET' || req.method === 'HEAD') {
+      const path = (req.url ?? '/').split('?')[0];
+      if (path === '/explanations.json') {
+        return send(res, 200, JSON.stringify(store.recent(EXPLANATIONS_SHOWN)));
+      }
+      if (path === '/explanations') {
+        return send(res, 200, renderExplanationsPage(store.recent(EXPLANATIONS_SHOWN)), undefined, 'text/html; charset=utf-8');
+      }
       return send(res, 200, JSON.stringify({ ok: true }));
     }
     if (req.method !== 'POST') return send(res, 405, JSON.stringify({ error: 'method not allowed' }));
@@ -74,12 +94,24 @@ export function createApp(config: Config): App {
     return send(res, 400, JSON.stringify({ error: 'unknown type' }), key);
   }
 
-  return { server, store };
+  async function stop(): Promise<void> {
+    await new Promise<void>((r) => server.close(() => r()));
+    await explanations?.stop();
+    store.close();
+  }
+
+  return { server, store, stop };
 }
 
-function send(res: ServerResponse, status: number, body: string, key?: Buffer): void {
+function send(
+  res: ServerResponse,
+  status: number,
+  body: string,
+  key?: Buffer,
+  contentType = 'application/json',
+): void {
   const headers: Record<string, string> = {
-    'content-type': 'application/json',
+    'content-type': contentType,
     'content-length': String(Buffer.byteLength(body)),
   };
   if (key) headers[SIGNATURE_HEADER] = sign(key, body);

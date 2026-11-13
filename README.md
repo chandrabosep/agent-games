@@ -18,10 +18,14 @@ Decision, a Reason code, and (on Provable tasks) a Groth16 Proof from the offici
 | `src/store.ts` | SQLite: Seen-set per Mode, response cache for Retries, task logs and evidence |
 | `src/gatekeeper.ts` | One Task end to end |
 | `src/app.ts` | Transport: GET health check, HMAC on the raw body, routing by `type`, signed responses |
+| `src/explainer.ts` | Claude (Opus 5.5) writes a plain-language Explanation of a Decision; returns null on any failure |
+| `src/explanations.ts` | Background queue for Explanations, and the public `/explanations` page |
 
 Rules it follows: the Decision comes only from the Checks (a failed Proof costs 2 points, a wrong
 REJECT costs 3); only approved Proof references go in the Seen-set; Retries get the identical body;
-`proof_tx` is echoed back; no LLM anywhere; no Kurier call while answering.
+`proof_tx` is echoed back; no Kurier call while answering. An LLM never decides: with
+`ANTHROPIC_API_KEY` set, Claude writes an Explanation *after* each response is sent, shown at
+`/explanations` (HTML) and `/explanations.json`. Without the key the agent runs unchanged.
 
 ```sh
 npm install

@@ -46,5 +46,9 @@ _Avoid_: Proof (that's ours), tx hash
 The Proof references our agent has approved in a given Mode. A Task whose Proof reference is already in it is a reused-proof Trap.
 _Avoid_: Replay cache, blacklist
 
+**Explanation**:
+A plain-language account of a Decision, written by a language model after the response is sent. It never influences the Decision.
+_Avoid_: Reasoning, rationale (the Decision has none beyond the Checks)
+
 **Dispute evidence**:
 Our Proof submitted to zkVerify through Kurier after the response is sent, kept so a score can be contested.

@@ -13,6 +13,17 @@ export interface TaskRecord {
   responseBody: string | null;
 }
 
+export interface RecentTask {
+  taskId: string;
+  mode: Mode;
+  receivedAt: string;
+  decision: Decision;
+  reasonCode: string;
+  proofAttached: boolean;
+  input: Record<string, unknown> | null;
+  explanation: string | null;
+}
+
 export type Claim =
   | { kind: 'existing'; record: TaskRecord }
   | { kind: 'new'; record: TaskRecord };
@@ -62,6 +73,54 @@ export class Store {
         PRIMARY KEY (mode, proof_ref)
       );
     `);
+    // Added after v1 shipped: migrate an existing database in place.
+    const columns = new Set((this.db.pragma('table_info(tasks)') as { name: string }[]).map((c) => c.name));
+    if (!columns.has('explanation')) this.db.exec('ALTER TABLE tasks ADD COLUMN explanation TEXT');
+    if (!columns.has('explained_at')) this.db.exec('ALTER TABLE tasks ADD COLUMN explained_at TEXT');
+  }
+
+  setExplanation(taskId: string, explanation: string): void {
+    this.db
+      .prepare('UPDATE tasks SET explanation = ?, explained_at = ? WHERE task_id = ?')
+      .run(explanation, new Date().toISOString(), taskId);
+  }
+
+  /** Most recent answered Tasks, newest first, for the public explanations page. */
+  recent(limit: number): RecentTask[] {
+    const rows = this.db
+      .prepare(
+        `SELECT task_id, mode, received_at, envelope, decision, reason_code, proof_attached, explanation
+         FROM tasks WHERE response_body IS NOT NULL ORDER BY received_at DESC LIMIT ?`,
+      )
+      .all(limit) as {
+      task_id: string;
+      mode: Mode;
+      received_at: string;
+      envelope: string;
+      decision: Decision;
+      reason_code: string;
+      proof_attached: number | null;
+      explanation: string | null;
+    }[];
+    return rows.map((r) => {
+      let input: Record<string, unknown> | null = null;
+      try {
+        const env = JSON.parse(r.envelope) as { input?: unknown };
+        if (typeof env.input === 'object' && env.input !== null) input = env.input as Record<string, unknown>;
+      } catch {
+        input = null;
+      }
+      return {
+        taskId: r.task_id,
+        mode: r.mode,
+        receivedAt: r.received_at,
+        decision: r.decision,
+        reasonCode: r.reason_code,
+        proofAttached: r.proof_attached === 1,
+        input,
+        explanation: r.explanation,
+      };
+    });
   }
 
   /**

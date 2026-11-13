@@ -20,6 +20,8 @@ services:
         value: keccak
       - key: AGENT_GAMES_HMAC_SECRET
         sync: false # paste after Rotate Secret on the dashboard
+      - key: ANTHROPIC_API_KEY
+        sync: false # optional: enables background Explanations
     disk:
       name: gatekeeper-data
       mountPath: /var/data
