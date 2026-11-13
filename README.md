@@ -42,7 +42,7 @@ npm run build && npm start
 ```
 
 Deploy: `render.yaml` (Render Starter + 1 GB disk at `/var/data`). Set `AGENT_GAMES_HMAC_SECRET`
-after Rotate Secret, then run preflight. Don't deploy while a round is open (12:00–22:00 IST).
+after Rotate Secret, then run preflight. Don't deploy while a Gatekeeper round is open (16:00–02:00 IST, 13–20 Nov) or a Steal the VFY match is running.
 
 **Still to settle in practice mode:** the `task_id` → field encoding (`TASK_ID_ENCODING`), how hex
 values are encoded, and which reason-code set is accepted.

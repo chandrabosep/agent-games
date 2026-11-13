@@ -18,7 +18,7 @@ Our live entry for Event 01. Domain words (Task, Decision, Check, Trap, Proof re
 ## Operations
 
 - Live: `https://proof-gatekeeper.onrender.com/agent`, Render service `srv-dbradhoae00c73f34l80` (Starter plan, 1 GB disk at `/var/data`, auto-deploy off). The Render CLI is logged in; read logs with `render logs -r srv-dbradhoae00c73f34l80 --limit 100 -o text`.
-- **Deploy window:** Gatekeeper rounds run 12:00–22:00 IST daily, 12–19 Nov. Each deploy takes the agent offline for a few seconds (disk), so deploy only outside that window. Confirm with the user before every deploy.
+- **Deploy window:** Gatekeeper rounds run 16:00–02:00 IST daily, 13–20 Nov (schedule changed on 13 Nov; recheck the event page). Steal the VFY matches have no published times; never deploy mid-match. Each deploy takes the agent offline for 10–70 s (disk), so deploy only outside those windows. Confirm with the user before every deploy.
 - Secrets live in `.env` (gitignored) and Render env vars: `AGENT_GAMES_HMAC_SECRET`, `ANTHROPIC_API_KEY`. Collect new secrets with the secure prompt (`request_secret`), never in chat, and redact them in any output.
 - **Lockfile gotcha:** Render builds with npm 10, which rejects versionless lockfile entries that npm 11 writes on `npm i`. `test/lockfile.test.ts` catches it; strip the entry before pushing.
 - The repo is public (judges review it). Commit only what is safe to publish.

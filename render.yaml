@@ -1,6 +1,6 @@
 # Render Blueprint: one always-on web service with a persistent disk for SQLite.
 # Starter plan (not free): free instances sleep, and sleeping forfeits tasks.
-# Never deploy between 12:00 and 22:00 IST while a Gatekeeper round is open.
+# Never deploy between 16:00 and 02:00 IST (Gatekeeper rounds, 13–20 Nov) or during a Steal the VFY match.
 services:
   - type: web
     name: proof-gatekeeper
