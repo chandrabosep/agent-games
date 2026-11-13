@@ -1,0 +1,61 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+// snarkjs ships no types.
+// @ts-expect-error untyped module
+import * as snarkjs from 'snarkjs';
+
+export interface ProofResult {
+  proof: unknown;
+  publicSignals: string[];
+  /** Whether the proof verified locally against circuits/gatekeeper_vk.json. */
+  locallyVerified: boolean;
+  ms: number;
+}
+
+export type ProveOutcome =
+  | { ok: true; result: ProofResult }
+  | { ok: false; error: string; ms: number };
+
+export class Prover {
+  private readonly wasm: string;
+  private readonly zkey: string;
+  private readonly vk: unknown;
+
+  constructor(circuitsDir: string) {
+    this.wasm = join(circuitsDir, 'gatekeeper.wasm');
+    this.zkey = join(circuitsDir, 'gatekeeper_final.zkey');
+    this.vk = JSON.parse(readFileSync(join(circuitsDir, 'gatekeeper_vk.json'), 'utf8'));
+  }
+
+  /**
+   * Best effort: never throws, gives up after budgetMs. A failed Proof never
+   * changes the Decision (GLOSSARY: Decision).
+   */
+  async prove(inputs: Record<string, string>, budgetMs: number): Promise<ProveOutcome> {
+    const start = Date.now();
+    if (budgetMs <= 0) return { ok: false, error: 'no time budget left', ms: 0 };
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, rej) => {
+      timer = setTimeout(() => rej(new Error(`proving exceeded ${budgetMs} ms`)), budgetMs);
+    });
+    try {
+      const { proof, publicSignals } = await Promise.race([
+        snarkjs.groth16.fullProve(inputs, this.wasm, this.zkey),
+        timeout,
+      ]);
+      const locallyVerified: boolean = await snarkjs.groth16.verify(this.vk, publicSignals, proof);
+      return { ok: true, result: { proof, publicSignals, locallyVerified, ms: Date.now() - start } };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message.split('\n')[0] : String(e);
+      return { ok: false, error: msg, ms: Date.now() - start };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/** Releases snarkjs worker threads (needed for clean test/process exit). */
+export async function shutdownProver(): Promise<void> {
+  const curve = (globalThis as { curve_bn128?: { terminate(): Promise<void> } }).curve_bn128;
+  if (curve) await curve.terminate();
+}
