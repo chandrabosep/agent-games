@@ -1,0 +1,84 @@
+use strict
+Proof Gatekeeper
+You are helping me build an AI agent for "Proof Gatekeeper", an event in the zkVerify Agent Games. Build a production-ready HTTP service in TypeScript (Node.js).
+
+HOW THE GAME WORKS (read carefully):
+- The platform NEVER runs my code. My agent is a public HTTPS endpoint the platform POSTs signed tasks to.
+- For each task the platform sends a signed JSON envelope describing a transfer request. My agent decides APPROVE or REJECT and returns a Groth16 ZK proof (generated locally with snarkjs) plus its public signals.
+- The platform independently re-verifies my proof against its OWN registered verification key AND checks whether my decision was correct. A valid proof is necessary but NOT sufficient — the circuit is the referee, so I cannot fake a decision.
+- Score: +12 correct decision, -6 approving a trap, -3 rejecting a valid request, -2 timeout/offline, -2 if the proof fails to verify, plus a reliability bonus (verified proofs / tasks). Over 8 daily rounds the highest total wins.
+
+AUTHORITATIVE SPEC — DO NOT INVENT PROTOCOL DETAILS:
+- Read https://agentgames.zkverify.io/build — the full protocol: task/response schemas, the preflight handshake, circuit artifacts, zkVerify paths, and the Security checklist. Treat it as the source of truth over anything you assume.
+- Read https://agentgames.zkverify.io/guide for the registration flow.
+- Download the gatekeeper circuit artifacts (gatekeeper.wasm, gatekeeper_final.zkey) from the /build artifacts section.
+
+WHAT TO BUILD:
+1. An HTTPS POST handler at a path I register (e.g. /agent).
+2. HMAC verification of every inbound request: compute the HMAC over the RAW request body and compare it to the x-agent-games-signature header BEFORE parsing JSON. Reject on mismatch.
+3. Decision logic: APPROVE only when EVERY check on the /build Security checklist passes (VK matches the registered key, correct circuit/proof system, public inputs prove the required threshold + recipient + amount, proof reference not reused, finalized before approval, valid task signature + timestamp). Otherwise REJECT with a reason_code. Enforce the final safety rules in deterministic code — never let a language model make the final call.
+4. Local Groth16 proof generation with snarkjs using the downloaded wasm/zkey.
+5. zkVerify submission (Kurier REST or zkVerifyJS) — wait for a Finalized result before treating a proof as confirmed.
+6. A signed response { decision, reason_code, proof, public_signals } with a valid x-agent-games-signature header over the raw response body.
+7. The preflight responder: reply { ok: true, protocolVersion: "v1" }, signed.
+8. A local test harness that replays sample envelopes, plus an .env.example.
+
+SECURITY — NON-NEGOTIABLE:
+- NEVER paste a private key, wallet seed phrase, or API key into this chat, and never hardcode or commit them. Load all secrets from environment variables only: AGENT_GAMES_HMAC_SECRET (from the dashboard "Rotate Secret"), KURIER_API_KEY, and any wallet key. Add .env to .gitignore and ship a .env.example with blank values.
+- Fail closed: on any timeout (60s hard deadline), error, or uncertainty, REJECT — never approve by default.
+- Never log secrets or include them in any prompt you send to a model.
+- Use testnet first.
+
+Ask me for anything you need (language/framework preference, hosting target). Start by outlining the file structure, then implement.
+Steal the VFY
+You are helping me build an AI agent for "Steal the VFY", a tournament event in the zkVerify Agent Games. Build a production-ready HTTP service in TypeScript (Node.js).
+
+HOW THE GAME WORKS:
+- The platform NEVER runs my code. My agent is a public HTTPS endpoint the platform POSTs signed turn envelopes to.
+- It is a 1v1 Swiss tournament. Each match is 20 simultaneous turns, both agents start at 100 VFY, highest balance at the end wins. Each turn I pick ONE action: HOLD, FORTIFY (cost 2, blocks up to 6 incoming extraction), or EXTRACT N (steal up to N<=10; a fortified opponent cuts my gain by 6).
+- Each turn I return my action AND a Groth16 proof (snarkjs) that the action is the output of my PRE-COMMITTED strategy for the given game state. The platform re-verifies the proof offline and independently recomputes the public-inputs hash — any divergence is rejected and scored as HOLD. The circuit is the referee; I cannot deviate from my committed strategy mid-match.
+- Before Swiss Round 1 I must register a strategy COMMITMENT (a Poseidon hash of my strategy params + salt) from the dashboard. It is frozen when matches are paired.
+
+>>> THE STRATEGY IS MINE — DO NOT WRITE IT FOR ME <<<
+- Leave my strategy parameters as a clearly-marked TODO constant (e.g. STRATEGY_PARAMS) with a comment. DO NOT invent, suggest, or hardcode a "good" strategy, a heuristic, or specific parameter values. Build the harness that PROVES whatever strategy I later fill in; the competitive decision is mine. Fill it in only if I explicitly give you values.
+
+AUTHORITATIVE SPEC — DO NOT INVENT PROTOCOL DETAILS:
+- Read https://agentgames.zkverify.io/build — the Steal the VFY section: turn envelope + response schema, the publicInputsHash computation with its EXACT field order, the actions, and the common-mistakes list. Source of truth.
+- Read https://agentgames.zkverify.io/guide for registration and how to register the strategy commitment.
+- Download vfy-policy.wasm and vfy-policy_final.zkey from the /build artifacts section.
+
+WHAT TO BUILD:
+1. HTTPS POST handler + HMAC verification over the RAW body against x-agent-games-signature before parsing. Reject on mismatch.
+2. A pure, deterministic policy function action = policy(state, STRATEGY_PARAMS). It must match my circuit exactly, so keep it isolated and well-tested. (Leave STRATEGY_PARAMS as a TODO per the rule above.)
+3. Correct public-inputs hash computation per the /build spec (exact field order, 32-byte big-endian packing). Compute it BEFORE submitting to zkVerify.
+4. Local Groth16 proof generation (snarkjs, downloaded wasm/zkey) and zkVerify submission (Kurier or zkVerifyJS), awaiting Finalized.
+5. A signed response echoing matchId + turn: { action, policyProof: { circuitVersion, proofReference, publicInputsHash }, proof, public_signals, idempotencyKey } with a valid x-agent-games-signature. Omit action.amount entirely for HOLD / FORTIFY.
+6. A script to compute and print my commitment hash (Poseidon of params + salt) so I can register it — WITHOUT printing the salt or params.
+7. A local test harness, plus an .env.example.
+
+SECURITY — NON-NEGOTIABLE:
+- NEVER paste a private key, wallet seed, strategy salt, or API key into this chat; never hardcode or commit them. Env vars only: AGENT_GAMES_HMAC_SECRET, KURIER_API_KEY, wallet key, and STRATEGY_SALT. Add .env to .gitignore and ship a .env.example.
+- Fail closed: on timeout, error, or uncertainty within the turn deadline, default to HOLD — never crash into an invalid submission.
+- Keep my strategy params and salt secret: never log them, never put them in a model prompt, never commit them. My edge depends on them staying private until reveal.
+- Use testnet first.
+
+Ask for my language/hosting preferences, then outline the file structure and implement.
+mb-4 flex flex-wrap items-center gap-2
+rounded-full border px-3.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] transition-colors ${a.key===e?"border-white/20 bg-white/8 text-high":"border-white/10 text-ghost hover:text-body"}
+${l.default.codeBlock} overflow-hidden rounded-[6px] border border-white/8 bg-arena/65
+flex items-center justify-between border-b border-white/8 px-4 py-2
+font-mono text-[9px] uppercase tracking-[0.14em] text-ghost
+Paste into your AI coding tool · 
+inline-flex items-center gap-1.5 rounded border border-white/12 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.1em] text-ghost transition-colors hover:text-body
+Copied
+Copy prompt
+max-h-[420px] overflow-auto p-4 font-mono text-[11px] leading-6 text-body
+mt-4 flex gap-3 rounded-[6px] border border-watch/20 bg-watch/5 p-4
+mt-0.5 shrink-0 text-watch
+text-xs leading-5 text-body
+font-semibold text-watch
+Before you paste:
+ the prompt scaffolds the plumbing — it never asks for or contains secrets. Keep it that way. Never paste a private key, wallet seed, or API key into an AI tool, and for Steal the VFY the prompt deliberately leaves your
+strategy as your own TODO
+ — don't let the model fill it in. A vibecoded harness is fine; a vibecoded strategy isn't a strategy.
+use strict
