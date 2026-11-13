@@ -59,6 +59,20 @@ If `turn.unknown_commitment` shows up in the logs, the platform is using a commi
 
 **Discord question (not posted yet):** how many turns a fortify lasts, what "exposed balance" means, the size of the HOLD reserve bonus, and whether EXTRACT is clipped at the opponent's balance.
 
+## Policy Vault (Wildcard, Event 03)
+
+- **Live** since 14 Nov 02:05 IST in the same Render service (deploy `39cdf75`): page at
+  https://proof-gatekeeper.onrender.com/vault. It's on because `WILDCARD_VAULT_ADDRESS` is set; remove that env var to switch it off.
+- Vault `0x5cAe9F71aCBB0f93108200AC3EA308C9ADfAf703`, token tUSD `0xe8fe0f1D30FE98c21525379663406043bC4e77e5`
+  (Base Sepolia, Sourcify exact match). Hot wallet `0x13B7bcB78Be465d435784936Fda8DFb56361d44e` (testnet only; key in `.env` and Render).
+- Render env vars: `WILDCARD_VAULT_ADDRESS`, `WILDCARD_TOKEN_ADDRESS`, `WILDCARD_CHAIN_ID`, `WILDCARD_VK_HASH`,
+  `WILDCARD_WALLET_KEY`, `WILDCARD_POLICY` (private), `KURIER_TESTNET_API_KEY`. Set through the Render REST API
+  with the CLI's login (the CLI has no env-var command).
+- Verified live: an invoice through Render paid 75 tUSD in 31 s (zkVerify aggregation 65056, Base tx `0xeb5aa0b8…266c`);
+  earlier local run in `wildcard/e2e/live-base-sepolia-2026-11-13.json`.
+- **Don't run a second copy of the agent with the same wallet** while Render is live; their transactions would collide.
+- Still to do: the user submits on the dashboard (Wildcard category).
+
 ## Procedures
 
 **Practice dispatch.** Dashboard → Practice (`https://agentgames.zkverify.io/dashboard/practice`). The limit is 10 per agent per hour. Only the user can sign in (X or wallet). So either the user dispatches and pastes the result card, or the user signs in to the preview pane and the agent dispatches. Each result card shows the trap type, the expected and submitted decisions, the proof status, and the request and response.
