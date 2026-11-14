@@ -31,10 +31,17 @@ contract MockToken is IERC20 {
         balanceOf[to] += amount;
     }
 
+    mapping(address => mapping(address => uint256)) public allowance;
+
     function transfer(address to, uint256 amount) external returns (bool) {
         require(balanceOf[msg.sender] >= amount, "balance");
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
+        return true;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
         return true;
     }
 }
@@ -54,6 +61,10 @@ contract PolicyVaultTest is Test {
     bytes32 constant VK = keccak256("policy_payment vk");
     uint256 constant COMMITMENT = 12345;
     address constant VENDOR = address(0xBEEF);
+    address constant AGENT = address(0xA6E7);
+    address constant DRAINER = address(0xD7A1);
+    uint256 constant INSTANT = 25e6;
+    uint256 constant DAILY = 60e6;
     bytes32[] empty;
 
     function setUp() public {
@@ -61,7 +72,8 @@ contract PolicyVaultTest is Test {
         vm.warp(1_790_000_000);
         zkv = new MockZkVerify();
         usdc = new MockToken();
-        vault = new PolicyVault(zkv, usdc, VK, 2, COMMITMENT);
+        vault = new PolicyVault(zkv, usdc, VK, 2, COMMITMENT, AGENT, INSTANT, DAILY);
+        vault.setBlocked(DRAINER, true);
         usdc.mint(address(vault), 1_000e6);
     }
 
@@ -148,7 +160,7 @@ contract PolicyVaultTest is Test {
 
     function test_proofIsBoundToVaultAndChain() public {
         bytes32 leaf = _publish(120e6, 1, block.timestamp + 600);
-        PolicyVault other = new PolicyVault(zkv, usdc, VK, 2, COMMITMENT);
+        PolicyVault other = new PolicyVault(zkv, usdc, VK, 2, COMMITMENT, AGENT, INSTANT, DAILY);
         assertTrue(other.leafFor(VENDOR, 120e6, 1, block.timestamp + 600) != leaf);
         vm.chainId(8453);
         assertTrue(vault.leafFor(VENDOR, 120e6, 1, block.timestamp + 600) != leaf);
@@ -160,6 +172,19 @@ contract PolicyVaultTest is Test {
         vault.setPolicy(1);
         vm.expectRevert(PolicyVault.NotOwner.selector);
         vault.withdraw(address(0xA11CE), 1);
+        vm.expectRevert(PolicyVault.NotOwner.selector);
+        vault.setBlocked(DRAINER, false);
+        vm.expectRevert(PolicyVault.NotOwner.selector);
+        vault.setInstantLimits(1e30, 1e30);
+        vm.expectRevert(PolicyVault.NotOwner.selector);
+        vault.setAgent(address(0xA11CE));
+        vm.stopPrank();
+        // The agent is not the owner: a hijacked agent cannot withdraw or loosen the rules.
+        vm.startPrank(AGENT);
+        vm.expectRevert(PolicyVault.NotOwner.selector);
+        vault.withdraw(AGENT, 1);
+        vm.expectRevert(PolicyVault.NotOwner.selector);
+        vault.setInstantLimits(1e30, 1e30);
         vm.stopPrank();
         vault.withdraw(address(this), 10e6);
         assertEq(usdc.balanceOf(address(this)), 10e6);
@@ -171,6 +196,106 @@ contract PolicyVaultTest is Test {
         vault.pay(VENDOR, 1, p, block.timestamp + 600, 77, empty, 1, 0);
         vm.expectRevert(PolicyVault.NotFieldElement.selector);
         vault.setPolicy(p);
+    }
+
+    // ---- Layer 1: public rules on execute ----
+
+    function _exec(address target, bytes memory data) internal {
+        vm.prank(AGENT);
+        vault.execute(target, 0, data);
+    }
+
+    function _transferCall(address to, uint256 amount) internal pure returns (bytes memory) {
+        return abi.encodeCall(IERC20.transfer, (to, amount));
+    }
+
+    function test_instantTransferWithinBudget() public {
+        _exec(address(usdc), _transferCall(VENDOR, 20e6));
+        assertEq(usdc.balanceOf(VENDOR), 20e6);
+        assertEq(vault.instantRemaining(), 25e6); // 40 left today, capped at 25 per call
+        _exec(address(usdc), _transferCall(VENDOR, 25e6));
+        assertEq(vault.instantRemaining(), 15e6);
+    }
+
+    function test_instantBudgetIsPerCallAndPerDay() public {
+        vm.prank(AGENT);
+        vm.expectRevert(PolicyVault.OverInstantLimit.selector);
+        vault.execute(address(usdc), 0, _transferCall(VENDOR, 25e6 + 1));
+        _exec(address(usdc), _transferCall(VENDOR, 25e6));
+        _exec(address(usdc), _transferCall(VENDOR, 25e6));
+        vm.prank(AGENT);
+        vm.expectRevert(PolicyVault.OverInstantLimit.selector);
+        vault.execute(address(usdc), 0, _transferCall(VENDOR, 10e6 + 1)); // 60 a day
+        vm.warp(block.timestamp + 1 days);
+        _exec(address(usdc), _transferCall(VENDOR, 25e6)); // new day, new budget
+        assertEq(usdc.balanceOf(VENDOR), 75e6);
+    }
+
+    function test_onlyAgentMayExecute() public {
+        vm.expectRevert(PolicyVault.NotAgent.selector);
+        vault.execute(address(usdc), 0, _transferCall(VENDOR, 1));
+    }
+
+    function test_blocksUnlimitedApproval() public {
+        vm.prank(AGENT);
+        vm.expectRevert(PolicyVault.BlockedUnlimitedApproval.selector);
+        vault.execute(address(usdc), 0, abi.encodeCall(IERC20.approve, (VENDOR, type(uint256).max)));
+    }
+
+    function test_smallApprovalCountsAgainstBudgetAndRevokeIsFree() public {
+        _exec(address(usdc), abi.encodeCall(IERC20.approve, (VENDOR, 20e6)));
+        assertEq(usdc.allowance(address(vault), VENDOR), 20e6);
+        _exec(address(usdc), abi.encodeCall(IERC20.approve, (VENDOR, 0)));
+        assertEq(usdc.allowance(address(vault), VENDOR), 0);
+        assertEq(vault.instantRemaining(), 25e6);
+        assertEq(vault.spentToday(), 20e6);
+    }
+
+    function test_blocksSetApprovalForAll() public {
+        vm.prank(AGENT);
+        vm.expectRevert(PolicyVault.BlockedApprovalForAll.selector);
+        vault.execute(address(0x1234), 0, abi.encodeWithSelector(0xa22cb465, VENDOR, true));
+    }
+
+    function test_blocksBlocklistedAddresses() public {
+        vm.startPrank(AGENT);
+        vm.expectRevert(abi.encodeWithSelector(PolicyVault.BlockedAddress.selector, DRAINER));
+        vault.execute(address(usdc), 0, _transferCall(DRAINER, 1));
+        vm.expectRevert(abi.encodeWithSelector(PolicyVault.BlockedAddress.selector, DRAINER));
+        vault.execute(address(usdc), 0, abi.encodeCall(IERC20.approve, (DRAINER, 1)));
+        vm.expectRevert(abi.encodeWithSelector(PolicyVault.BlockedAddress.selector, DRAINER));
+        vault.execute(DRAINER, 0, hex"12345678");
+        vm.stopPrank();
+    }
+
+    function test_blocklistAppliesToProofPayments() public {
+        uint256 until = block.timestamp + 600;
+        zkv.publish(vault.leafFor(DRAINER, 120e6, 1, until));
+        vm.expectRevert(abi.encodeWithSelector(PolicyVault.BlockedAddress.selector, DRAINER));
+        vault.pay(DRAINER, 120e6, 1, until, 77, empty, 1, 0);
+    }
+
+    function test_blocksEthAndUnknownCalls() public {
+        vm.deal(address(vault), 1 ether);
+        vm.startPrank(AGENT);
+        vm.expectRevert(PolicyVault.BlockedEthTransfer.selector);
+        vault.execute(VENDOR, 1, "");
+        vm.expectRevert(PolicyVault.UnsupportedCall.selector);
+        vault.execute(address(usdc), 0, hex"23b872dd"); // transferFrom selector, no args
+        vm.expectRevert(PolicyVault.UnsupportedCall.selector);
+        vault.execute(address(0x1234), 0, _transferCall(VENDOR, 1)); // some other token
+        vm.expectRevert(PolicyVault.UnsupportedCall.selector);
+        vault.execute(address(usdc), 0, abi.encodePacked(_transferCall(VENDOR, 1), uint256(7))); // trailing bytes
+        vm.stopPrank();
+    }
+
+    function test_ownerSetsRules() public {
+        vault.setInstantLimits(0, 0);
+        vm.prank(AGENT);
+        vm.expectRevert(PolicyVault.OverInstantLimit.selector);
+        vault.execute(address(usdc), 0, _transferCall(VENDOR, 1));
+        vault.setAgent(address(0xA6E8));
+        assertEq(vault.agent(), address(0xA6E8));
     }
 }
 

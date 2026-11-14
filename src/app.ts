@@ -122,6 +122,10 @@ export function createApp(config: Config, options: AppOptions = {}): App {
         return send(res, 200, renderVaultPage(vault.info), undefined, 'text/html; charset=utf-8');
       }
       if (path === '/vault/info') return send(res, 200, JSON.stringify(vault.info));
+      if (path === '/vault/rules') {
+        const r = await vault.agent.rules();
+        return send(res, 200, JSON.stringify({ instantCap: r.instantCap.toString(), dailyCap: r.dailyCap.toString(), remaining: r.remaining.toString() }));
+      }
       if (path === '/vault/requests') return send(res, 200, JSON.stringify(vault.agent.recent(50)));
       const m = /^\/vault\/requests\/([0-9a-f-]{36})$/.exec(path);
       if (m) {

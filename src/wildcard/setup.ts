@@ -37,7 +37,11 @@ export function loadVault(
     const policy = parsePolicy(need('WILDCARD_POLICY'));
     const vkHash = need('WILDCARD_VK_HASH') as Hex;
     const token = need('WILDCARD_TOKEN_ADDRESS') as Address;
-    if (!/^0x[0-9a-fA-F]{40}$/.test(vault) || !/^0x[0-9a-fA-F]{40}$/.test(token)) throw new Error('bad vault or token address');
+    const isAddr = (a: string | undefined) => !!a && /^0x[0-9a-fA-F]{40}$/.test(a);
+    if (!isAddr(vault) || !isAddr(token)) throw new Error('bad vault or token address');
+    const demoVendor = env.WILDCARD_DEMO_VENDOR?.trim() || undefined;
+    const demoDrainer = env.WILDCARD_DEMO_DRAINER?.trim() || undefined;
+    if ((demoVendor && !isAddr(demoVendor)) || (demoDrainer && !isAddr(demoDrainer))) throw new Error('bad demo address');
 
     const vaultChain = new VaultChain(vault as Address, chainId, rpc, need('WILDCARD_WALLET_KEY') as Hex);
     const agent = new VaultAgent({
@@ -59,6 +63,8 @@ export function loadVault(
       vkHash,
       explorer: EXPLORER[chainId],
       freeText: Boolean(env.ANTHROPIC_API_KEY),
+      demoVendor,
+      demoDrainer,
     };
     return { agent, info };
   } catch (e) {

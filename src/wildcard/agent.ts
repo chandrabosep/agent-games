@@ -1,19 +1,24 @@
-// Policy Vault agent: takes payment requests, decides deterministically, proves, gets the proof
-// verified and aggregated by zkVerify, and pays from the vault. One request at a time.
+// Policy Vault agent: takes payment requests and raw transactions, and gets each one through the
+// vault's two layers of rules. One request at a time.
 //
-//   received → reading → refused
-//                      → proving → verifying → paying → paid
+//   received → reading → refused                    (a public rule or the hidden policy said no)
+//                      → paying → paid              (instant: within the public budget)
+//                      → proving → verifying → paying → paid   (proof: the hidden policy, via zkVerify)
 //                                                     → failed (any step)
 //
-// The public log shows every request. A refusal for policy reasons is shown only as
-// "outside policy": naming which rule failed would let anyone probe the hidden policy.
+// Layer 1, the public rules, is decided by the vault contract itself: the agent simulates
+// `execute` and records the vault's answer. Layer 2, the hidden policy, is decided by
+// deterministic code that mirrors the circuit, then proven. The public log names the public rule
+// that refused a request, but a hidden-policy refusal is shown only as "outside policy": naming
+// which rule failed would let anyone probe the policy.
 import Database from 'better-sqlite3';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Address, Hex } from 'viem';
+import { decodeFunctionData, encodeFunctionData, getAddress, isAddress, maxUint256, type Address, type Hex } from 'viem';
 import { log } from '../log.js';
 import type { ProveOutcome } from '../prover.js';
+import { ERC20_ABI, type InstantRules, type Simulated, type VaultTx } from './chain.js';
 import type { AggregationDetails, KurierJob } from './zkverify.js';
 import { groth16Leaf, KURIER_DONE } from './zkverify.js';
 import type { Extracted, Intake } from './intake.js';
@@ -28,27 +33,57 @@ import {
 
 export type Status = 'received' | 'reading' | 'refused' | 'proving' | 'verifying' | 'paying' | 'paid' | 'failed';
 
-/** Why a request was refused. Only the INTAKE_* reasons and OUTSIDE_POLICY are ever shown publicly. */
+/** Why a request was refused (public). The hidden policy's specific rule is never among them. */
 export type Refusal =
   | 'INTAKE_UNAVAILABLE'
   | 'INTAKE_NO_PAYMENT'
   | 'INTAKE_NO_ADDRESS'
+  | 'INTAKE_BAD_CHECKSUM'
   | 'INTAKE_BAD_AMOUNT'
   | 'INTAKE_CURRENCY'
   | 'VAULT_BALANCE'
+  // Public rules, named by the vault contract's own revert.
+  | 'BLOCKED_ETH_TRANSFER'
+  | 'BLOCKED_APPROVAL_FOR_ALL'
+  | 'BLOCKED_UNLIMITED_APPROVAL'
+  | 'BLOCKED_ADDRESS'
+  | 'UNSUPPORTED_CALL'
+  | 'OVER_INSTANT_LIMIT'
+  // The hidden policy.
   | 'OUTSIDE_POLICY';
+
+/** The vault's revert → the public refusal it means. */
+const PUBLIC_RULE: Record<string, Refusal> = {
+  BlockedEthTransfer: 'BLOCKED_ETH_TRANSFER',
+  BlockedApprovalForAll: 'BLOCKED_APPROVAL_FOR_ALL',
+  BlockedUnlimitedApproval: 'BLOCKED_UNLIMITED_APPROVAL',
+  BlockedAddress: 'BLOCKED_ADDRESS',
+  UnsupportedCall: 'UNSUPPORTED_CALL',
+};
+
+export type Mode = 'instant' | 'proof';
+export type Kind = 'transfer' | 'approve' | 'setApprovalForAll' | 'other';
 
 export interface VaultRequest {
   id: string;
   createdAt: string;
   updatedAt: string;
   status: Status;
-  source: 'text' | 'fields';
+  source: Source;
+  /** What the transaction does, as decoded from its calldata. */
+  kind: Kind | null;
+  /** The contract the transaction calls. */
+  target: string | null;
+  /** Which layer let it through: the public instant budget, or a policy proof. */
+  mode: Mode | null;
   memo: string | null;
+  /** The transfer recipient, or the approved spender or operator. */
   recipient: string | null;
   amount: string | null;
   /** Public refusal reason. */
   reason: Refusal | null;
+  /** What the vault contract itself answered (simulated), e.g. "execute → BlockedUnlimitedApproval". */
+  onchainCheck: string | null;
   nonce: string | null;
   validUntil: number | null;
   kurierJobId: string | null;
@@ -61,9 +96,18 @@ export interface VaultRequest {
   secondsToPaid: number | null;
 }
 
+export type Source = 'text' | 'fields' | 'tx';
+
 export interface ChainPort {
   readonly vault: Address;
   readonly chainId: number;
+  token(): Promise<Address>;
+  /** Would the vault's `execute` run this? Free: a simulation, nothing is sent. */
+  simulateExecute(tx: VaultTx): Promise<Simulated>;
+  execute(tx: VaultTx): Promise<{ txHash: Hex; status: 'success' | 'reverted' }>;
+  /** The vault's revert for `pay` without a proof: what a hijacked agent would get. */
+  simulatePayWithoutProof(p: { recipient: Address; amount: bigint; nonce: bigint; validUntil: bigint }): Promise<string>;
+  instantRules(): Promise<InstantRules>;
   policyCommitment(): Promise<bigint>;
   tokenBalance(): Promise<bigint>;
   nonceUsed(nonce: bigint): Promise<boolean>;
@@ -106,6 +150,7 @@ export interface AgentDeps {
 
 const ACCEPTED_CURRENCIES = new Set(['USD', 'USDC', 'TUSD', 'US$', '$']);
 const MAX_TEXT = 4000;
+const MAX_CALLDATA_BYTES = 1024;
 
 export class SubmitError extends Error {
   constructor(
@@ -130,7 +175,8 @@ export class VaultAgent {
 
   constructor(private readonly d: AgentDeps) {
     mkdirSync(d.dataDir, { recursive: true });
-    this.db = new Database(join(d.dataDir, 'vault.sqlite'));
+    // One log per vault, so a redeployed vault starts with a clean public log.
+    this.db = new Database(join(d.dataDir, `vault-${d.chain.vault.slice(2, 10).toLowerCase()}.sqlite`));
     this.db.pragma('journal_mode = WAL');
     this.db.exec(`CREATE TABLE IF NOT EXISTS requests (
       id TEXT PRIMARY KEY,
@@ -140,8 +186,9 @@ export class VaultAgent {
       source TEXT NOT NULL,
       text TEXT,
       fields TEXT,
+      kind TEXT, target TEXT, mode TEXT,
       memo TEXT, recipient TEXT, amount TEXT,
-      reason TEXT, private_reason TEXT,
+      reason TEXT, private_reason TEXT, onchain_check TEXT,
       nonce TEXT, valid_until INTEGER,
       kurier_job_id TEXT, zkverify_tx_url TEXT, aggregation_id INTEGER, leaf TEXT,
       pay_tx TEXT, error TEXT, submitted_ms INTEGER, seconds_to_paid REAL
@@ -161,11 +208,19 @@ export class VaultAgent {
     return { commitment: '0x' + this.commitment.toString(16).padStart(64, '0'), vaultMatches: onChain === this.commitment };
   }
 
-  /** Accepts `{text}` (read by Claude) or `{recipient, amount, memo?}`. Returns the request id. */
+  /** The public rules' live numbers (instant cap, daily cap, what's left today). */
+  rules(): Promise<InstantRules> {
+    return this.d.chain.instantRules();
+  }
+
+  /**
+   * Accepts `{text}` (an invoice, read by Claude), `{recipient, amount, memo?}`, or
+   * `{tx: {to, data, value?}, memo?}` (a raw transaction to check and run). Returns the request id.
+   */
   submit(body: unknown): string {
     if (typeof body !== 'object' || body === null || Array.isArray(body)) throw new SubmitError(400, 'body must be a JSON object');
     const b = body as Record<string, unknown>;
-    let source: 'text' | 'fields';
+    let source: Source;
     let text: string | null = null;
     let fields: string | null = null;
     if (typeof b.text === 'string') {
@@ -181,8 +236,21 @@ export class VaultAgent {
         amount: String(b.amount).slice(0, 40),
         memo: typeof b.memo === 'string' ? b.memo.slice(0, 80) : '',
       });
+    } else if (typeof b.tx === 'object' && b.tx !== null && !Array.isArray(b.tx)) {
+      const t = b.tx as Record<string, unknown>;
+      if (typeof t.to !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(t.to)) throw new SubmitError(400, 'tx.to must be a 0x address');
+      if (!isAddress(t.to)) throw new SubmitError(400, 'tx.to has an invalid checksum (a typo?)');
+      if (typeof t.data !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(t.data)) throw new SubmitError(400, 'tx.data must be 0x hex bytes');
+      if ((t.data.length - 2) / 2 > MAX_CALLDATA_BYTES) throw new SubmitError(413, `tx.data is longer than ${MAX_CALLDATA_BYTES} bytes`);
+      const value = t.value === undefined ? '0' : String(t.value);
+      if (!/^\d{1,78}$/.test(value)) throw new SubmitError(400, 'tx.value must be a whole number of wei');
+      source = 'tx';
+      fields = JSON.stringify({ to: t.to, data: t.data, value, memo: typeof b.memo === 'string' ? b.memo.slice(0, 80) : '' });
     } else {
-      throw new SubmitError(400, 'send {"text": "..."} or {"recipient": "0x...", "amount": "12.50", "memo": "..."}');
+      throw new SubmitError(
+        400,
+        'send {"text": "..."}, {"recipient": "0x...", "amount": "12.50", "memo": "..."}, or {"tx": {"to": "0x...", "data": "0x...", "value": "0"}}',
+      );
     }
 
     const hourAgo = new Date(this.now() - 3600_000).toISOString();
@@ -215,6 +283,12 @@ export class VaultAgent {
     this.db
       .prepare("UPDATE requests SET status = 'received' WHERE status IN ('reading', 'proving') ")
       .run();
+    // An instant payment cut off mid-send may or may not have landed; don't send it twice.
+    this.db
+      .prepare(
+        "UPDATE requests SET status = 'failed', error = 'interrupted during an instant payment; see the vault''s Executed events' WHERE status = 'paying' AND mode = 'instant'",
+      )
+      .run();
     this.kick();
   }
 
@@ -236,20 +310,41 @@ export class VaultAgent {
     });
   }
 
+  /**
+   * New requests first, so a transaction the public rules block (or let through) is answered in
+   * seconds even while an earlier payment waits minutes for zkVerify. Proofs in flight are checked
+   * one step at a time in between.
+   */
   private async drain(): Promise<void> {
+    const nextNew = () =>
+      this.db.prepare("SELECT * FROM requests WHERE status = 'received' ORDER BY created_at LIMIT 1").get() as Row | undefined;
     for (;;) {
       if (this.stopped) return;
-      const row = this.db
-        .prepare("SELECT * FROM requests WHERE status IN ('received', 'verifying', 'paying') ORDER BY created_at LIMIT 1")
-        .get() as Row | undefined;
-      if (!row) return;
-      try {
-        await this.process(row);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message.split('\n')[0].slice(0, 300) : String(e);
-        log('vault.failed', { id: row.id, error: msg });
-        this.update(row.id, { status: 'failed', error: msg });
+      const fresh = nextNew();
+      if (fresh) {
+        await this.guard(fresh, () => this.decideAndProve(fresh));
+        continue;
       }
+      const waiting = this.db
+        .prepare("SELECT * FROM requests WHERE status IN ('verifying', 'paying') ORDER BY created_at")
+        .all() as Row[];
+      if (waiting.length === 0) return;
+      for (const row of waiting) {
+        if (this.stopped) return;
+        await this.guard(row, () => this.advanceProof(row));
+        if (nextNew()) break;
+      }
+      if (!nextNew()) await sleep(this.pollMs);
+    }
+  }
+
+  private async guard(row: Row, step: () => Promise<void>): Promise<void> {
+    try {
+      await step();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message.split('\n')[0].slice(0, 300) : String(e);
+      log('vault.failed', { id: row.id, error: msg });
+      this.update(row.id, { status: 'failed', error: msg });
     }
   }
 
@@ -261,40 +356,83 @@ export class VaultAgent {
       .run(...cols.map((c) => f[c as keyof Row] as never), new Date(this.now()).toISOString(), id);
   }
 
-  private refuse(id: string, reason: Refusal, privateReason?: string): void {
-    log('vault.refused', { id, reason, privateReason });
-    this.update(id, { status: 'refused', reason, private_reason: privateReason ?? reason });
-  }
-
-  private async process(row: Row): Promise<void> {
-    if (row.status === 'received') return this.decideAndProve(row);
-    if (row.status === 'verifying' || row.status === 'paying') return this.verifyAndPay(row);
+  private refuse(id: string, reason: Refusal, privateReason?: string, onchainCheck?: string): void {
+    log('vault.refused', { id, reason, privateReason, onchainCheck });
+    this.update(id, { status: 'refused', reason, private_reason: privateReason ?? reason, onchain_check: onchainCheck ?? null });
   }
 
   private async decideAndProve(row: Row): Promise<void> {
-    // 1. Read the request.
+    // 1. Read the request, and turn it into the transaction the vault would run.
     this.update(row.id, { status: 'reading' });
-    let ex: Extracted | null;
-    if (row.source === 'text') {
-      ex = await this.d.intake!(row.text ?? '');
-      if (!ex) return this.refuse(row.id, 'INTAKE_UNAVAILABLE');
+    const token = await this.d.chain.token();
+    let tx: VaultTx;
+    let action: Action;
+    if (row.source === 'tx') {
+      const f = JSON.parse(row.fields ?? '{}') as { to: Address; data: Hex; value: string; memo: string };
+      tx = { to: getAddress(f.to.toLowerCase()), data: f.data, value: BigInt(f.value) };
+      action = decodeAction(tx);
+      this.update(row.id, {
+        memo: f.memo || null,
+        kind: action.kind,
+        target: tx.to,
+        recipient: action.counterparty,
+        amount:
+          action.amount === null ? null
+          : action.amount === maxUint256 ? 'unlimited'
+          : tx.to.toLowerCase() === token.toLowerCase() ? formatAmount(action.amount, this.decimals)
+          : action.amount.toString(),
+      });
     } else {
-      const f = JSON.parse(row.fields ?? '{}') as { recipient: string; amount: string; memo: string };
-      ex = { found: true, recipient: f.recipient, amount: f.amount, currency: 'USD', memo: f.memo };
+      let ex: Extracted | null;
+      if (row.source === 'text') {
+        ex = await this.d.intake!(row.text ?? '');
+        if (!ex) return this.refuse(row.id, 'INTAKE_UNAVAILABLE');
+      } else {
+        const f = JSON.parse(row.fields ?? '{}') as { recipient: string; amount: string; memo: string };
+        ex = { found: true, recipient: f.recipient, amount: f.amount, currency: 'USD', memo: f.memo };
+      }
+      this.update(row.id, { memo: ex.memo || null });
+      if (!ex.found) return this.refuse(row.id, 'INTAKE_NO_PAYMENT');
+      if (!/^0x[0-9a-fA-F]{40}$/.test(ex.recipient)) return this.refuse(row.id, 'INTAKE_NO_ADDRESS');
+      // Mixed case carries an EIP-55 checksum; a wrong one usually means a mistyped address.
+      if (!isAddress(ex.recipient)) return this.refuse(row.id, 'INTAKE_BAD_CHECKSUM');
+      const amount = parseAmount(ex.amount, this.decimals);
+      if (amount === null) return this.refuse(row.id, 'INTAKE_BAD_AMOUNT');
+      if (!ACCEPTED_CURRENCIES.has(ex.currency.toUpperCase())) return this.refuse(row.id, 'INTAKE_CURRENCY');
+      const recipient = getAddress(ex.recipient.toLowerCase());
+      tx = { to: token, value: 0n, data: encodeFunctionData({ abi: ERC20_ABI, functionName: 'transfer', args: [recipient, amount] }) };
+      action = { kind: 'transfer', counterparty: recipient, amount };
+      this.update(row.id, { kind: 'transfer', target: token, recipient, amount: formatAmount(amount, this.decimals) });
     }
-    this.update(row.id, { memo: ex.memo || null });
-    if (!ex.found) return this.refuse(row.id, 'INTAKE_NO_PAYMENT');
-    if (!/^0x[0-9a-fA-F]{40}$/.test(ex.recipient)) return this.refuse(row.id, 'INTAKE_NO_ADDRESS');
-    const amount = parseAmount(ex.amount, this.decimals);
-    if (amount === null) return this.refuse(row.id, 'INTAKE_BAD_AMOUNT');
-    if (!ACCEPTED_CURRENCIES.has(ex.currency.toUpperCase())) return this.refuse(row.id, 'INTAKE_CURRENCY');
-    this.update(row.id, { recipient: ex.recipient, amount: formatAmount(amount, this.decimals) });
+
+    // 2. Layer 1, the public rules: ask the vault contract itself (a free simulation).
+    const sim = await this.d.chain.simulateExecute(tx);
+    if (sim.ok) {
+      this.update(row.id, { status: 'paying', mode: 'instant', onchain_check: 'execute → allowed (within the public instant budget)' });
+      const sent = await this.d.chain.execute(tx);
+      if (sent.status !== 'success') throw new Error(`execute transaction reverted: ${sent.txHash}`);
+      this.update(row.id, { status: 'paid', pay_tx: sent.txHash });
+      log('vault.executed', { id: row.id, tx: sent.txHash, kind: action.kind });
+      return;
+    }
+    const publicRule = PUBLIC_RULE[sim.error];
+    if (publicRule) return this.refuse(row.id, publicRule, undefined, `execute → ${sim.error}`);
+    if (sim.error === 'TransferFailed') return this.refuse(row.id, 'VAULT_BALANCE', undefined, `execute → ${sim.error}`);
+    if (sim.error !== 'OverInstantLimit') throw new Error(`vault refused execute: ${sim.error}`);
+    // Over the instant budget. Only a token transfer can go on to a policy proof; the vault's
+    // check order means OverInstantLimit already implies the target is the vault's token.
+    if (action.kind !== 'transfer' || action.counterparty === null || action.amount === null) {
+      return this.refuse(row.id, 'OVER_INSTANT_LIMIT', undefined, `execute → ${sim.error}`);
+    }
+    const recipient = action.counterparty as Address;
+    const amount = action.amount;
+    this.update(row.id, { mode: 'proof' });
 
     // 2. Decide: deterministic, the circuit's own rules.
     const nonce = BigInt('0x' + randomBytes(8).toString('hex'));
     const validUntil = BigInt(Math.floor(this.now() / 1000) + this.ttl);
     const payment: Payment = {
-      recipient: addressToBigint(ex.recipient),
+      recipient: addressToBigint(recipient),
       amount,
       nonce,
       validUntil,
@@ -302,7 +440,11 @@ export class VaultAgent {
       chainId: BigInt(this.d.chain.chainId),
     };
     const why = refusal(this.d.policy, payment);
-    if (why) return this.refuse(row.id, 'OUTSIDE_POLICY', why);
+    if (why) {
+      // Show that the lock is in the contract: a hijacked agent skipping this check gets nowhere.
+      const hijacked = await this.d.chain.simulatePayWithoutProof({ recipient, amount, nonce, validUntil });
+      return this.refuse(row.id, 'OUTSIDE_POLICY', why, `execute → OverInstantLimit; pay without a proof → ${hijacked}`);
+    }
     if ((await this.d.chain.tokenBalance()) < amount) return this.refuse(row.id, 'VAULT_BALANCE');
 
     // 3. Prove, and check that the vault expects exactly this leaf before paying zkVerify to verify it.
@@ -311,46 +453,40 @@ export class VaultAgent {
     if (!proved.ok) throw new Error(`proving failed: ${proved.error}`);
     if (!proved.result.locallyVerified) throw new Error('proof did not verify locally');
     const leaf = groth16Leaf(this.d.vkHash, proved.result.publicSignals);
-    const vaultLeaf = await this.d.chain.leafFor(ex.recipient as Address, amount, nonce, validUntil);
+    const vaultLeaf = await this.d.chain.leafFor(recipient, amount, nonce, validUntil);
     if (vaultLeaf.toLowerCase() !== leaf.toLowerCase()) throw new Error(`vault expects leaf ${vaultLeaf}, proof has ${leaf}`);
 
     // 4. zkVerify.
     const jobId = await this.d.kurier.submit(this.d.vkHash, proved.result.proof, proved.result.publicSignals, this.d.chain.chainId);
     this.update(row.id, { status: 'verifying', kurier_job_id: jobId, leaf, submitted_ms: this.now() });
     log('vault.submitted', { id: row.id, jobId });
-    const fresh = this.db.prepare('SELECT * FROM requests WHERE id = ?').get(row.id) as Row;
-    return this.verifyAndPay(fresh);
   }
 
-  private async verifyAndPay(row: Row): Promise<void> {
+  /** One step for a proof in flight: returns at once if zkVerify or the chain isn't ready yet. */
+  private async advanceProof(row: Row): Promise<void> {
     if (!row.kurier_job_id || !row.recipient || !row.amount || !row.nonce || !row.valid_until) {
       throw new Error('request is missing its proof data');
     }
     const deadline = row.valid_until * 1000;
-    let job: KurierJob;
-    for (;;) {
-      if (this.stopped) return;
-      job = await this.d.kurier.status(row.kurier_job_id);
-      if (job.txExplorerUrl && job.txExplorerUrl !== row.zkverify_tx_url) {
-        this.update(row.id, { zkverify_tx_url: job.txExplorerUrl });
-        row.zkverify_tx_url = job.txExplorerUrl;
-      }
-      if (KURIER_DONE.has(job.status)) break;
+    const job: KurierJob = await this.d.kurier.status(row.kurier_job_id);
+    if (job.txExplorerUrl && job.txExplorerUrl !== row.zkverify_tx_url) {
+      this.update(row.id, { zkverify_tx_url: job.txExplorerUrl });
+    }
+    if (!KURIER_DONE.has(job.status)) {
       if (this.now() > deadline) throw new Error('payment deadline passed before zkVerify aggregated the proof');
-      await sleep(this.pollMs);
+      return;
     }
     if (job.status === 'Failed' || !job.aggregationDetails || job.aggregationId === undefined) {
       throw new Error(`zkVerify job ended as ${job.status}${job.error ? `: ${job.error}` : ''}`);
     }
     const details = job.aggregationDetails;
     if (row.leaf && details.leaf.toLowerCase() !== row.leaf.toLowerCase()) throw new Error('zkVerify aggregated a different leaf');
-    this.update(row.id, { aggregation_id: job.aggregationId });
+    if (row.aggregation_id !== job.aggregationId) this.update(row.id, { aggregation_id: job.aggregationId });
 
     // Kurier can report Aggregated a few seconds before the root lands on the vault's chain.
-    while (!(await this.d.chain.isAggregated(job.aggregationId, details))) {
-      if (this.stopped) return;
+    if (!(await this.d.chain.isAggregated(job.aggregationId, details))) {
       if (this.now() > deadline) throw new Error('payment deadline passed before the root reached the chain');
-      await sleep(this.pollMs);
+      return;
     }
 
     // After a restart mid-payment the transaction may already have landed.
@@ -367,7 +503,12 @@ export class VaultAgent {
     );
     if (paid.status !== 'success') throw new Error(`pay transaction reverted: ${paid.txHash}`);
     const seconds = row.submitted_ms ? (this.now() - row.submitted_ms) / 1000 : null;
-    this.update(row.id, { status: 'paid', pay_tx: paid.txHash, seconds_to_paid: seconds });
+    this.update(row.id, {
+      status: 'paid',
+      pay_tx: paid.txHash,
+      seconds_to_paid: seconds,
+      onchain_check: 'execute → OverInstantLimit; pay with a zkVerify-aggregated policy proof → paid',
+    });
     log('vault.paid', { id: row.id, tx: paid.txHash, seconds });
   }
 }
@@ -377,14 +518,18 @@ interface Row {
   created_at: string;
   updated_at: string;
   status: Status;
-  source: 'text' | 'fields';
+  source: Source;
   text: string | null;
   fields: string | null;
+  kind: Kind | null;
+  target: string | null;
+  mode: Mode | null;
   memo: string | null;
   recipient: string | null;
   amount: string | null;
   reason: Refusal | null;
   private_reason: string | null;
+  onchain_check: string | null;
   nonce: string | null;
   valid_until: number | null;
   kurier_job_id: string | null;
@@ -405,10 +550,14 @@ function toPublic(r: Row): VaultRequest {
     updatedAt: r.updated_at,
     status: r.status,
     source: r.source,
+    kind: r.kind,
+    target: r.target,
+    mode: r.mode,
     memo: r.memo,
     recipient: r.recipient,
     amount: r.amount,
     reason: r.reason,
+    onchainCheck: r.onchain_check,
     nonce: r.nonce,
     validUntil: r.valid_until,
     kurierJobId: r.kurier_job_id,
@@ -419,6 +568,30 @@ function toPublic(r: Row): VaultRequest {
     error: r.error,
     secondsToPaid: r.seconds_to_paid,
   };
+}
+
+interface Action {
+  kind: Kind;
+  counterparty: string | null;
+  amount: bigint | null;
+}
+
+/** What a transaction does, for the log. The vault decides on its own reading of the calldata. */
+export function decodeAction(tx: VaultTx): Action {
+  try {
+    const d = decodeFunctionData({ abi: ERC20_ABI, data: tx.data });
+    if (d.functionName === 'transfer' || d.functionName === 'approve') {
+      const [who, amount] = d.args as readonly [Address, bigint];
+      return { kind: d.functionName, counterparty: who, amount };
+    }
+    if (d.functionName === 'setApprovalForAll') {
+      const [operator] = d.args as readonly [Address, boolean];
+      return { kind: 'setApprovalForAll', counterparty: operator, amount: null };
+    }
+  } catch {
+    // not a call we recognise
+  }
+  return { kind: 'other', counterparty: null, amount: null };
 }
 
 /** "120", "120.5", "1250.000000" → smallest units. null for anything else, zero, or too many decimals. */

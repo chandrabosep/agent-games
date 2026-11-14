@@ -131,7 +131,7 @@ try {
   const tx2 = await wallet.deployContract({
     abi: pv.abi,
     bytecode: pv.bytecode.object,
-    args: [ZKV_PROXY, tokenAddr, vkHash, DOMAIN, BigInt(proved.result.publicSignals[0])],
+    args: [ZKV_PROXY, tokenAddr, vkHash, DOMAIN, BigInt(proved.result.publicSignals[0]), account.address, 0n, 0n], // no instant budget: every payment needs a proof
   });
   const r2 = await fork.waitForTransactionReceipt({ hash: tx2 });
   if (r1.contractAddress?.toLowerCase() !== tokenAddr.toLowerCase() || r2.contractAddress?.toLowerCase() !== vaultAddr.toLowerCase()) {

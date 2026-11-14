@@ -63,15 +63,23 @@ If `turn.unknown_commitment` shows up in the logs, the platform is using a commi
 
 ## Policy Vault (Wildcard, Event 03)
 
-- **Live** since 14 Nov 02:05 IST in the same Render service (deploy `39cdf75`): page at
-  https://proof-gatekeeper.onrender.com/vault. It's on because `WILDCARD_VAULT_ADDRESS` is set; remove that env var to switch it off.
-- Vault `0x5cAe9F71aCBB0f93108200AC3EA308C9ADfAf703`, token tUSD `0xe8fe0f1D30FE98c21525379663406043bC4e77e5`
-  (Base Sepolia, Sourcify exact match). Hot wallet `0x13B7bcB78Be465d435784936Fda8DFb56361d44e` (testnet only; key in `.env` and Render).
-- Render env vars: `WILDCARD_VAULT_ADDRESS`, `WILDCARD_TOKEN_ADDRESS`, `WILDCARD_CHAIN_ID`, `WILDCARD_VK_HASH`,
-  `WILDCARD_WALLET_KEY`, `WILDCARD_POLICY` (private), `KURIER_TESTNET_API_KEY`. Set through the Render REST API
-  with the CLI's login (the CLI has no env-var command).
-- Verified live: an invoice through Render paid 75 tUSD in 31 s (zkVerify aggregation 65056, Base tx `0xeb5aa0b8…266c`);
-  earlier local run in `wildcard/e2e/live-base-sepolia-2026-11-13.json`.
+- **Render still runs the first version** (deploy `39cdf75`, vault `0x5cAe9F71aCBB0f93108200AC3EA308C9ADfAf703`,
+  proof payments only). Page: https://proof-gatekeeper.onrender.com/vault. It's on because `WILDCARD_VAULT_ADDRESS` is set.
+- **Second version (the full guard) is built, deployed to Base Sepolia and tested live from a local agent, but not
+  yet on Render** (14 Nov). Vault `0x82F24a9f46A5B4894c1b945ebB69fFB9B860d528` (Sourcify exact match), same token
+  tUSD `0xe8fe0f1D30FE98c21525379663406043bC4e77e5`, instant cap 25 tUSD, daily 500 tUSD, demo drainer blocklisted.
+  Live results: `wildcard/e2e/live-guard-base-sepolia-2026-11-14.json` (all 7 cases as expected).
+- **Keys (all testnet, all in `.env`):**
+  - `WILDCARD_OWNER_KEY` (`0x6BBF…1177`): owns the new vault. **Never put it on Render.**
+  - `WILDCARD_WALLET_KEY` (`0x1c2C…0a5B`): the new vault's agent; this one goes to Render.
+  - `WILDCARD_OLD_WALLET_KEY` (`0x13B7…d44e`): owner and agent of the first vault; it's the key Render holds today.
+- **To switch Render to the new vault** (outside 16:00–02:00 IST, after asking the user), set these Render env vars from
+  `.env` through the Render REST API, then deploy: `WILDCARD_VAULT_ADDRESS`, `WILDCARD_WALLET_KEY`, `WILDCARD_POLICY`
+  (now 4 allowlist entries, incl. the demo vendor), `WILDCARD_DEMO_VENDOR`, `WILDCARD_DEMO_DRAINER`. Token, VK hash,
+  chain and Kurier key are unchanged. Then check the startup log for `vault.ready` with `vaultMatches: true` and run
+  `npx tsx wildcard/scripts/live-demo.ts https://proof-gatekeeper.onrender.com`.
+- The request log is one SQLite file per vault (`vault-<address prefix>.sqlite` in `DATA_DIR`), so the new vault
+  starts with a clean public log.
 - **Don't run a second copy of the agent with the same wallet** while Render is live; their transactions would collide.
 - Still to do: the user submits on the dashboard (Wildcard category).
 

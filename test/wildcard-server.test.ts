@@ -15,11 +15,17 @@ const policy: Policy = { maxPerTx: 10n, policyExpiry: 1_900_000_000n, allowlist:
 // Never reached: these tests only submit requests that are refused before proving.
 const unused = () => { throw new Error('not expected'); };
 const chain = { vault: '0x5cAe9F71aCBB0f93108200AC3EA308C9ADfAf703', chainId: 84532, policyCommitment: unused, tokenBalance: unused,
-  nonceUsed: unused, leafFor: unused, isAggregated: unused, pay: unused } as unknown as ChainPort;
+  nonceUsed: unused, leafFor: unused, isAggregated: unused, pay: unused, execute: unused,
+  token: async () => '0xe8fe0f1D30FE98c21525379663406043bC4e77e5',
+  simulateExecute: async () => ({ ok: false, error: 'OverInstantLimit' }),
+  simulatePayWithoutProof: async () => 'ProofNotAggregated',
+  instantRules: async () => ({ instantCap: 25_000_000n, dailyCap: 500_000_000n, remaining: 25_000_000n }),
+} as unknown as ChainPort;
 const kurier = { submit: unused, status: unused } as unknown as ProofPort;
 const info: VaultPublicInfo = {
   vault: chain.vault, chainId: 84532, chainName: 'Base Sepolia', token: '0xe8fe0f1D30FE98c21525379663406043bC4e77e5',
   tokenSymbol: 'tUSD', policyCommitment: '0x01', vkHash: '0x02', explorer: 'https://sepolia.basescan.org', freeText: false,
+  demoVendor: '0x' + '4'.repeat(40), demoDrainer: '0x' + 'd'.repeat(40),
 };
 
 let withVault: App;
@@ -59,6 +65,15 @@ describe('Policy Vault routes', () => {
     expect(page.headers.get('content-type')).toMatch(/text\/html/);
     expect(await page.text()).toContain(info.vault);
     expect(await (await fetch(`${base}/vault/info`)).json()).toEqual(info);
+    expect(await (await fetch(`${base}/vault/rules`)).json()).toEqual({ instantCap: '25000000', dailyCap: '500000000', remaining: '25000000' });
+  });
+
+  it('offers one ready-made transaction per outcome, and accepts raw transactions', async () => {
+    const html = await (await fetch(`${base}/vault`)).text();
+    expect(html).toContain('Approve unlimited tUSD to a drainer');
+    expect(html).toContain('setApprovalForAll to a drainer');
+    const res = await postJson(`${base}/vault/requests`, { tx: { to: '0x' + '5'.repeat(40), data: '0x12345678' } });
+    expect(res.status).toBe(202);
   });
 
   it('accepts an unsigned request, refuses it by policy, and shows it in the log', async () => {
@@ -70,7 +85,7 @@ describe('Policy Vault routes', () => {
       r = (await (await fetch(`${base}/vault/requests/${id}`)).json()) as typeof r;
       await new Promise((ok) => setTimeout(ok, 20));
     }
-    expect(r).toMatchObject({ status: 'refused', reason: 'OUTSIDE_POLICY' });
+    expect(r).toMatchObject({ status: 'refused', reason: 'OUTSIDE_POLICY', onchainCheck: 'execute → OverInstantLimit; pay without a proof → ProofNotAggregated' });
     const log = (await (await fetch(`${base}/vault/requests`)).json()) as { id: string }[];
     expect(log.map((x) => x.id)).toContain(id);
   });

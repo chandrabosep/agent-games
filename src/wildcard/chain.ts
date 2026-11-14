@@ -1,5 +1,7 @@
 // Policy Vault: reads and writes on the vault's chain (Base Sepolia for the demo).
 import {
+  BaseError,
+  ContractFunctionRevertedError,
   createPublicClient,
   createWalletClient,
   http,
@@ -25,7 +27,24 @@ export const VAULT_ABI = parseAbi([
   'function leafFor(address recipient, uint256 amount, uint256 nonce, uint256 validUntil) view returns (bytes32)',
   'function pay(address recipient, uint256 amount, uint256 nonce, uint256 validUntil, uint256 aggregationId, bytes32[] merklePath, uint256 leafCount, uint256 index)',
   'function setPolicy(uint256 commitment)',
+  'function agent() view returns (address)',
+  'function blocked(address) view returns (bool)',
+  'function instantCap() view returns (uint256)',
+  'function dailyCap() view returns (uint256)',
+  'function instantRemaining() view returns (uint256)',
+  'function execute(address target, uint256 value, bytes data) returns (bytes)',
+  'function setBlocked(address who, bool isBlocked)',
+  'function setAgent(address newAgent)',
+  'function setInstantLimits(uint256 instantCap, uint256 dailyCap)',
   'event Paid(uint256 indexed nonce, address indexed recipient, uint256 amount, uint256 aggregationId, bytes32 leaf)',
+  'event Executed(bytes4 indexed selector, address indexed counterparty, uint256 amount)',
+  'error NotAgent()',
+  'error BlockedEthTransfer()',
+  'error BlockedApprovalForAll()',
+  'error BlockedUnlimitedApproval()',
+  'error BlockedAddress(address who)',
+  'error UnsupportedCall()',
+  'error OverInstantLimit()',
   'error NotOwner()',
   'error NotFieldElement()',
   'error PaymentExpired()',
@@ -43,7 +62,34 @@ export const ERC20_ABI = parseAbi([
   'function decimals() view returns (uint8)',
   'function symbol() view returns (string)',
   'function mint(address to, uint256 amount)',
+  'function transfer(address to, uint256 amount) returns (bool)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function setApprovalForAll(address operator, bool approved)',
 ]);
+
+/** A transaction the agent wants the vault to run. */
+export interface VaultTx {
+  to: Address;
+  data: Hex;
+  value: bigint;
+}
+
+export type Simulated = { ok: true } | { ok: false; error: string };
+
+/** The vault's custom error name from a failed call, or the first line of the message. */
+export function revertName(e: unknown): string {
+  if (e instanceof BaseError) {
+    const r = e.walk((x) => x instanceof ContractFunctionRevertedError);
+    if (r instanceof ContractFunctionRevertedError && r.data?.errorName) return r.data.errorName;
+  }
+  return (e instanceof Error ? e.message : String(e)).split('\n')[0].slice(0, 200);
+}
+
+export interface InstantRules {
+  instantCap: bigint;
+  dailyCap: bigint;
+  remaining: bigint;
+}
 
 export function chainFor(chainId: number): Chain {
   if (chainId === baseSepolia.id) return baseSepolia;
@@ -117,6 +163,50 @@ export class VaultChain {
     });
   }
 
+  /** Asks the vault, without sending anything, whether `execute` would run this transaction. */
+  async simulateExecute(tx: VaultTx): Promise<Simulated> {
+    try {
+      await this.publicClient.simulateContract({
+        account: this.account, address: this.vault, abi: VAULT_ABI, functionName: 'execute', args: [tx.to, tx.value, tx.data],
+      });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: revertName(e) };
+    }
+  }
+
+  /** Sends `execute` (simulated first) and waits for the receipt. */
+  async execute(tx: VaultTx): Promise<{ txHash: Hex; status: 'success' | 'reverted'; gasUsed: bigint }> {
+    const { request } = await this.publicClient.simulateContract({
+      account: this.account, address: this.vault, abi: VAULT_ABI, functionName: 'execute', args: [tx.to, tx.value, tx.data],
+    });
+    const txHash = await this.wallet.writeContract(request);
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash, timeout: 120_000 });
+    return { txHash, status: receipt.status, gasUsed: receipt.gasUsed };
+  }
+
+  /** What a hijacked agent would get from calling `pay` with no proof: the vault's revert. */
+  async simulatePayWithoutProof(p: { recipient: Address; amount: bigint; nonce: bigint; validUntil: bigint }): Promise<string> {
+    try {
+      await this.publicClient.simulateContract({
+        account: this.account, address: this.vault, abi: VAULT_ABI, functionName: 'pay',
+        args: [p.recipient, p.amount, p.nonce, p.validUntil, 0n, [], 1n, 0n],
+      });
+      return 'NO_REVERT';
+    } catch (e) {
+      return revertName(e);
+    }
+  }
+
+  async instantRules(): Promise<InstantRules> {
+    const [instantCap, dailyCap, remaining] = await Promise.all([
+      this.read<bigint>('instantCap'),
+      this.read<bigint>('dailyCap'),
+      this.read<bigint>('instantRemaining'),
+    ]);
+    return { instantCap, dailyCap, remaining };
+  }
+
   /** Sends `pay` (simulated first, so a revert costs no gas) and waits for the receipt. */
   async pay(
     p: { recipient: Address; amount: bigint; nonce: bigint; validUntil: bigint },
@@ -164,6 +254,26 @@ export class VaultChainPort {
       throw e;
     });
     return this.infoP;
+  }
+
+  async token(): Promise<Address> {
+    return (await this.info()).token;
+  }
+
+  simulateExecute(tx: VaultTx): Promise<Simulated> {
+    return this.c.simulateExecute(tx);
+  }
+
+  execute(tx: VaultTx): Promise<{ txHash: Hex; status: 'success' | 'reverted' }> {
+    return this.c.execute(tx);
+  }
+
+  simulatePayWithoutProof(p: { recipient: Address; amount: bigint; nonce: bigint; validUntil: bigint }): Promise<string> {
+    return this.c.simulatePayWithoutProof(p);
+  }
+
+  instantRules(): Promise<InstantRules> {
+    return this.c.instantRules();
   }
 
   async policyCommitment(): Promise<bigint> {

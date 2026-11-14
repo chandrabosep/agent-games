@@ -49,8 +49,9 @@ values are encoded, and which reason-code set is accepted.
 
 ## Policy Vault (Wildcard, Event 03)
 
-An agent wallet that pays only what a hidden policy allows, with each payment proved in zero knowledge,
-verified on zkVerify and checked by a vault contract on Base. See [wildcard/README.md](wildcard/README.md).
+A wallet that checks an AI agent's transactions before they run. Public rules in the vault contract block
+drainer patterns instantly; anything over a small budget needs a zero-knowledge proof that it fits the owner's
+hidden policy, verified on zkVerify and checked by the vault on Base. See [wildcard/README.md](wildcard/README.md).
 Code: `wildcard/` (circuit, contracts, scripts) and `src/wildcard/` (agent); routes under `/vault`.
 
 ## Other folders
