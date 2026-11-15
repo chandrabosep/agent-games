@@ -12,6 +12,21 @@ export interface ProofResult {
   ms: number;
 }
 
+/**
+ * snarkjs's default bn128 curve starts one worker thread per CPU the host reports, each with its own
+ * heap. Render reports 16 CPUs on a 0.5-CPU, 512 MB instance, which took the process from 84 MB to
+ * ~490 MB on the first proof and over the limit on 14 Nov. A single-threaded curve stays near
+ * 140 MB and uses less CPU in total. Seeding snarkjs's global cache makes prove and verify reuse it.
+ */
+let curveReady: Promise<void> | undefined;
+function ensureSingleThreadCurve(): Promise<void> {
+  curveReady ??= (async () => {
+    const g = globalThis as { curve_bn128?: unknown };
+    if (!g.curve_bn128) g.curve_bn128 = await snarkjs.curves.getCurveFromName('bn128', { singleThread: true });
+  })();
+  return curveReady;
+}
+
 export type ProveOutcome =
   | { ok: true; result: ProofResult }
   | { ok: false; error: string; ms: number };
@@ -43,6 +58,7 @@ export class Prover {
       timer = setTimeout(() => rej(new Error(`proving exceeded ${budgetMs} ms`)), budgetMs);
     });
     try {
+      await ensureSingleThreadCurve();
       const { proof, publicSignals } = await Promise.race([
         snarkjs.groth16.fullProve(inputs, this.wasm, this.zkey),
         timeout,
@@ -58,8 +74,11 @@ export class Prover {
   }
 }
 
-/** Releases snarkjs worker threads (needed for clean test/process exit). */
+/** Releases the curve (and any snarkjs worker threads) for a clean test/process exit. */
 export async function shutdownProver(): Promise<void> {
-  const curve = (globalThis as { curve_bn128?: { terminate(): Promise<void> } }).curve_bn128;
+  const g = globalThis as { curve_bn128?: { terminate(): Promise<void> } | null };
+  const curve = g.curve_bn128;
+  g.curve_bn128 = null;
+  curveReady = undefined;
   if (curve) await curve.terminate();
 }

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Config } from './config.js';
 import type { Explainer } from './explainer.js';
+import { EncodingTrial, leaderboardStanding, type FetchStanding } from './encodingTrial.js';
 import { ExplanationQueue, renderExplanationsPage } from './explanations.js';
 import { Gatekeeper } from './gatekeeper.js';
 import { candidateKeys, sign, SIGNATURE_HEADER, verify } from './hmac.js';
@@ -21,6 +22,7 @@ const EXPLANATIONS_SHOWN = 100;
 export interface App {
   server: Server;
   store: Store;
+  encodingTrial: EncodingTrial;
   /** Close the server, let the explainer finish its current Explanation, close the database. */
   stop(): Promise<void>;
 }
@@ -28,6 +30,8 @@ export interface App {
 export interface AppOptions {
   /** Writes explanations in the background; absent means no explanations. */
   explainer?: Explainer;
+  /** Reads our leaderboard Standing for the Encoding trial; defaults to the public leaderboard when an agent id is set. */
+  fetchStanding?: FetchStanding;
   /** Wildcard Policy Vault: public routes under /vault; absent means those paths return 404. */
   vault?: { agent: VaultAgent; info: VaultPublicInfo };
 }
@@ -39,13 +43,25 @@ export interface AppOptions {
 export function createApp(config: Config, options: AppOptions = {}): App {
   const store = new Store(config.dataDir);
   const explanations = options.explainer ? new ExplanationQueue(store, options.explainer) : null;
+  const encodingTrial = new EncodingTrial({
+    store,
+    candidates: config.taskIdEncodings,
+    fetchStanding:
+      options.fetchStanding ??
+      (config.gatekeeperAgentId ? leaderboardStanding(config.leaderboardUrl, config.gatekeeperAgentId) : undefined),
+  });
   const gatekeeper = new Gatekeeper({
     store,
     prover: new Prover(config.circuitsDir),
-    taskIdEncoding: config.taskIdEncoding,
+    taskIdEncoding: () => encodingTrial.current(),
     proofBudgetMs: config.proofBudgetMs,
     deadlineMarginMs: config.deadlineMarginMs,
-    onAnswered: explanations ? (task) => explanations.enqueue(task) : undefined,
+    onAnswered: (task) => {
+      if (task.mode === 'competition' && task.proofEncoding) {
+        encodingTrial.observe({ taskId: task.taskId, encoding: task.proofEncoding, receivedAt: task.receivedAt });
+      }
+      explanations?.enqueue(task);
+    },
   });
   const steal = new StealTurns({
     store,
@@ -156,12 +172,13 @@ export function createApp(config: Config, options: AppOptions = {}): App {
 
   async function stop(): Promise<void> {
     await new Promise<void>((r) => server.close(() => r()));
+    encodingTrial.stop();
     await options.vault?.agent.stop();
     await explanations?.stop();
     store.close();
   }
 
-  return { server, store, stop };
+  return { server, store, encodingTrial, stop };
 }
 
 function send(

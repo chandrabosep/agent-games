@@ -14,13 +14,16 @@ const explainer = process.env.ANTHROPIC_API_KEY
   : undefined;
 // Wildcard Policy Vault: optional, off unless WILDCARD_VAULT_ADDRESS is set.
 const vault = loadVault(process.env, config.dataDir);
-const { server, stop } = createApp(config, { explainer, vault });
+const { server, encodingTrial, stop } = createApp(config, { explainer, vault });
 
 server.listen(config.port, () => {
   log('server.listening', {
     port: config.port,
     dataDir: config.dataDir,
-    taskIdEncoding: config.taskIdEncoding,
+    taskIdEncoding: encodingTrial.current(),
+    taskIdEncodings: config.taskIdEncodings,
+    encodingTrial: encodingTrial.status(),
+    encodingTrialObserves: config.gatekeeperAgentId !== '',
     hmacConfigured: config.hmacSecret !== '',
     stealHmacConfigured: config.stealHmacSecret !== '',
     explainer: explainer ? EXPLAINER_MODEL : 'off',
@@ -29,6 +32,7 @@ server.listen(config.port, () => {
     stealPreviousCommitment: config.keyring.previous ? commitmentHex(config.keyring.previous) : 'none',
     vault: vault ? vault.info.vault : 'off',
   });
+  encodingTrial.start();
   if (vault) {
     vault.agent.start();
     vault.agent

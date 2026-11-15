@@ -44,6 +44,14 @@ describe('Prover', () => {
     expect(outcome.result.publicSignals[11]).toBe('0');
   });
 
+  it('proves on a single-threaded curve (one worker per host CPU overran 512 MB on Render)', async () => {
+    const { outcome } = await proveFor({});
+    expect(outcome.ok).toBe(true);
+    const curve = (globalThis as { curve_bn128?: { tm: { singleThread: boolean; concurrency: number } } }).curve_bn128;
+    expect(curve?.tm.singleThread).toBe(true);
+    expect(curve?.tm.concurrency).toBe(1);
+  });
+
   it('fails without throwing when asked to prove the wrong decision', async () => {
     const input = parseTaskInput(rawInput({ amount: '1001' }));
     const outcome = await prover.prove(toCircuitInputs(input, 'gk_1', 'APPROVE', 7n, 'keccak'), 30_000);

@@ -16,8 +16,10 @@ services:
         value: "22"
       - key: DATA_DIR
         value: /var/data
-      - key: TASK_ID_ENCODING
-        value: keccak
+      - key: TASK_ID_ENCODING # candidates for the Encoding trial, in order
+        value: uuid-tail,keccak-shr8,ascii,hex-digits,sha256,keccak
+      - key: GATEKEEPER_AGENT_ID
+        sync: false # our agentId on the public leaderboard; without it the trial stays on the first candidate
       - key: AGENT_GAMES_HMAC_SECRET
         sync: false # paste after Rotate Secret on the dashboard
       - key: ANTHROPIC_API_KEY

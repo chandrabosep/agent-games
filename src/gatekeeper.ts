@@ -6,12 +6,13 @@ import { MalformedInput, parseMode, parseTaskInput, proofRefKey } from './parse.
 import type { Prover } from './prover.js';
 import { REASON_CODES, reasonCodeFor } from './reasonCodes.js';
 import type { Store } from './store.js';
-import type { Decision, TaskInput } from './types.js';
+import type { Decision, Mode, TaskInput } from './types.js';
 
 export interface GatekeeperDeps {
   store: Store;
   prover: Prover;
-  taskIdEncoding: TaskIdEncoding;
+  /** The `task_id` encoding to prove the next Task with (the Encoding trial may change it between Tasks). */
+  taskIdEncoding: () => TaskIdEncoding;
   /** Upper bound on proving time, before the deadline is considered. */
   proofBudgetMs: number;
   /** Margin kept before `deadline_at` for signing and sending. */
@@ -23,9 +24,14 @@ export interface GatekeeperDeps {
 
 export interface AnsweredTask {
   taskId: string;
+  mode: Mode;
   decision: Decision;
   reasonCode: string;
   input: Record<string, unknown> | null;
+  /** When the Task arrived (ms since epoch). */
+  receivedAt: number;
+  /** The `task_id` encoding of the attached Proof; null when no Proof was attached. */
+  proofEncoding: TaskIdEncoding | null;
 }
 
 /** A Task's response body, as the exact string that gets signed and sent. */
@@ -94,10 +100,11 @@ export class Gatekeeper {
     let proofError: string | null = provable ? null : 'not a provable task';
     let proveMs = 0;
     let locallyVerified: boolean | null = null;
+    const taskIdEncoding = this.deps.taskIdEncoding();
 
     if (provable && input) {
       const outcome = await this.deps.prover.prove(
-        toCircuitInputs(input, taskId, record.decision, BigInt(record.salt), this.deps.taskIdEncoding),
+        toCircuitInputs(input, taskId, record.decision, BigInt(record.salt), taskIdEncoding),
         this.budget(envelope.deadline_at),
       );
       proveMs = outcome.ok ? outcome.result.ms : outcome.ms;
@@ -121,12 +128,21 @@ export class Gatekeeper {
       reasonCode: record.reasonCode,
       parseError,
       proofAttached: 'proof' in body,
+      taskIdEncoding: 'proof' in body ? taskIdEncoding : null,
       locallyVerified,
       proofError,
       ...timings,
     });
     try {
-      this.deps.onAnswered?.({ taskId, decision: record.decision, reasonCode: record.reasonCode, input: rawInput });
+      this.deps.onAnswered?.({
+        taskId,
+        mode,
+        decision: record.decision,
+        reasonCode: record.reasonCode,
+        input: rawInput,
+        receivedAt: received,
+        proofEncoding: 'proof' in body ? taskIdEncoding : null,
+      });
     } catch (e) {
       log('task.on_answered_failed', { taskId, error: e instanceof Error ? e.message : String(e) });
     }

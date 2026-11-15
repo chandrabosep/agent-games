@@ -15,6 +15,7 @@ Decision, a Reason code, and (on Provable tasks) a Groth16 Proof from the offici
 | `src/reasonCodes.ts` | The only place reason-code strings live (swap the set here) |
 | `src/encoding.ts` | Task values → circuit field elements (`task_id` scheme is **unconfirmed**) |
 | `src/prover.ts` | snarkjs proving with a time budget; never throws, never changes the Decision |
+| `src/encodingTrial.ts` | Encoding trial: picks the `task_id` encoding the platform credits, from our leaderboard Standing |
 | `src/store.ts` | SQLite: Seen-set per Mode, response cache for Retries, task logs and evidence |
 | `src/gatekeeper.ts` | One Task end to end |
 | `src/app.ts` | Transport: GET health check, HMAC on the raw body, routing by `type` (Steal: `eventId`), signed responses |
@@ -44,8 +45,10 @@ npm run build && npm start
 Deploy: `render.yaml` (Render Starter + 1 GB disk at `/var/data`). Set `AGENT_GAMES_HMAC_SECRET`
 after Rotate Secret, then run preflight. Don't deploy while a Gatekeeper round is open (16:00–02:00 IST, 13–20 Nov) or a Steal the VFY match is running.
 
-**Still to settle in practice mode:** the `task_id` → field encoding (`TASK_ID_ENCODING`), how hex
-values are encoded, and which reason-code set is accepted.
+**`task_id` encoding (open):** practice accepts Proofs made with `keccak`, but competition Proofs made
+with it were not credited (10 points per Task instead of 12). `TASK_ID_ENCODING` takes a comma-separated
+list of candidates and the Encoding trial (`src/encodingTrial.ts`) works through them using our public
+leaderboard Standing; it needs `GATEKEEPER_AGENT_ID`. Status and procedure: `docs/testing.md`.
 
 ## Policy Vault (Wildcard, Event 03)
 

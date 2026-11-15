@@ -79,6 +79,10 @@ export class Store {
         envelope      TEXT NOT NULL,
         response_body TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
     // Added after v1 shipped: migrate an existing database in place.
     const columns = new Set((this.db.pragma('table_info(tasks)') as { name: string }[]).map((c) => c.name));
@@ -213,6 +217,18 @@ export class Store {
       )
       .run(args.turnKey, args.mode, new Date().toISOString(), args.envelope, args.responseBody);
     return this.stealResponse(args.turnKey) ?? args.responseBody;
+  }
+
+  /** Small pieces of agent state that must survive a restart (e.g. the Encoding trial). */
+  setting(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.db
+      .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run(key, value);
   }
 
   close(): void {

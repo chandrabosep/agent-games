@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { TASK_ID_ENCODINGS, type TaskIdEncoding } from './encoding.js';
+import { parseTaskIdEncodings, type TaskIdEncoding } from './encoding.js';
 import { log } from './log.js';
 import { EMPTY_KEYRING, loadKeyring, type Keyring } from './steal/keyring.js';
 
@@ -11,7 +11,11 @@ export interface Config {
   port: number;
   dataDir: string;
   circuitsDir: string;
-  taskIdEncoding: TaskIdEncoding;
+  /** `task_id` encodings in trial order; a single entry means no Encoding trial. */
+  taskIdEncodings: TaskIdEncoding[];
+  /** Our Gatekeeper agent's id on the public leaderboard; empty means the Encoding trial can't observe scores. */
+  gatekeeperAgentId: string;
+  leaderboardUrl: string;
   proofBudgetMs: number;
   deadlineMarginMs: number;
   /** Steal the VFY: the Strategy commitments we can prove against; empty means every Turn gets a Fallback HOLD. */
@@ -21,17 +25,15 @@ export interface Config {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const encoding = (env.TASK_ID_ENCODING ?? 'keccak') as TaskIdEncoding;
-  if (!TASK_ID_ENCODINGS.includes(encoding)) {
-    throw new Error(`TASK_ID_ENCODING must be one of ${TASK_ID_ENCODINGS.join(', ')}`);
-  }
   return {
     hmacSecret: (env.AGENT_GAMES_HMAC_SECRET ?? '').trim(),
     stealHmacSecret: (env.AGENT_GAMES_HMAC_SECRET_STEAL ?? '').trim(),
     port: Number(env.PORT ?? 8080),
     dataDir: resolve(env.DATA_DIR ?? 'data'),
     circuitsDir: resolve(env.CIRCUITS_DIR ?? 'circuits'),
-    taskIdEncoding: encoding,
+    taskIdEncodings: parseTaskIdEncodings(env.TASK_ID_ENCODING ?? 'keccak'),
+    gatekeeperAgentId: (env.GATEKEEPER_AGENT_ID ?? '').trim(),
+    leaderboardUrl: env.LEADERBOARD_URL ?? 'https://agentgames.zkverify.io/api/leaderboard',
     proofBudgetMs: Number(env.PROOF_BUDGET_MS ?? 45_000),
     deadlineMarginMs: Number(env.DEADLINE_MARGIN_MS ?? 5_000),
     keyring: keyringOrEmpty(env),
