@@ -61,6 +61,7 @@ const payment: Payment = {
   amount: parseUnits('120', 6),
   nonce: BigInt('0x' + randomBytes(8).toString('hex')),
   validUntil: BigInt(Math.floor(Date.now() / 1000) + 3 * 3600),
+  spentToday: 0n, // a fresh vault has paid nothing through proofs yet
   vault: BigInt(vaultAddr),
   chainId: BigInt(baseSepolia.id),
 };

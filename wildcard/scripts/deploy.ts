@@ -10,6 +10,8 @@
 //   npx tsx --env-file=.env wildcard/scripts/deploy.ts
 // Optional: WILDCARD_TOKEN_ADDRESS (reuse a TestUSD; otherwise a new one is deployed),
 // WILDCARD_INSTANT_CAP / WILDCARD_DAILY_CAP (whole tokens; default 25 / 500), WILDCARD_DEMO_DRAINER.
+// WILDCARD_POLICY is the hidden policy: {maxPerTx, dailyLimit, policyExpiry, allowlist, salt}, amounts
+// in the token's smallest unit. Only its Poseidon commitment goes on chain.
 import { readFileSync } from 'node:fs';
 import { createPublicClient, createWalletClient, http, parseUnits, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';

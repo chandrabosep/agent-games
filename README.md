@@ -54,7 +54,8 @@ leaderboard Standing; it needs `GATEKEEPER_AGENT_ID`. Status and procedure: `doc
 
 A wallet that checks an AI agent's transactions before they run. Public rules in the vault contract block
 drainer patterns instantly; anything over a small budget needs a zero-knowledge proof that it fits the owner's
-hidden policy, verified on zkVerify and checked by the vault on Base. See [wildcard/README.md](wildcard/README.md).
+hidden policy (per-payment limit, allowlist, and a daily total the vault counts itself, so no slow drain),
+verified on zkVerify and checked by the vault on Base. See [wildcard/README.md](wildcard/README.md).
 Code: `wildcard/` (circuit, contracts, scripts) and `src/wildcard/` (agent); routes under `/vault`.
 
 ## Other folders

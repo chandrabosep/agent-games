@@ -21,6 +21,7 @@ const TOKEN: Address = '0xe8fe0f1D30FE98c21525379663406043bC4e77e5';
 const DRAINER = '0xd7a1d7a1d7a1d7a1d7a1d7a1d7a1d7a1d7a1d7a1';
 const policy: Policy = {
   maxPerTx: 500_000_000n,
+  dailyLimit: 1_000_000_000n,
   policyExpiry: 1_900_000_000n,
   allowlist: [BigInt(VENDOR), 0x2222222222222222222222222222222222222222n],
   salt: 42n,
@@ -38,6 +39,8 @@ class FakeChain implements ChainPort {
   instantCap = 25_000_000n;
   dailyCap = 60_000_000n;
   spent = 0n;
+  /** PolicyVault.paidToday(): proof payments so far today. */
+  paidSoFar = 0n;
   blocked = new Set([DRAINER.toLowerCase()]);
   async token() { return TOKEN; }
   async simulateExecute(tx: VaultTx): Promise<Simulated> {
@@ -64,17 +67,23 @@ class FakeChain implements ChainPort {
     return { txHash: '0xbeef' as Hex, status: 'success' as const };
   }
   async simulatePayWithoutProof() { return 'ProofNotAggregated'; }
-  async instantRules() { return { instantCap: this.instantCap, dailyCap: this.dailyCap, remaining: this.instantCap }; }
+  async instantRules() { return { instantCap: this.instantCap, dailyCap: this.dailyCap, remaining: this.instantCap, paidToday: this.paidSoFar }; }
+  async paidToday() { return this.paidSoFar; }
   async policyCommitment() { return policyCommitment(policy); }
   async tokenBalance() { return this.balance; }
   async nonceUsed(n: bigint) { return this.used.has(n); }
   async leafFor(recipient: Address, amount: bigint, nonce: bigint, validUntil: bigint) {
-    return this.leafOverride ?? groth16Leaf(VK, [policyCommitment(policy), BigInt(recipient), amount, nonce, validUntil, BigInt(VAULT), 84532n]);
+    return (
+      this.leafOverride ??
+      groth16Leaf(VK, [policyCommitment(policy), BigInt(recipient), amount, nonce, validUntil, this.paidSoFar, BigInt(VAULT), 84532n])
+    );
   }
   async isAggregated() { return true; }
-  async pay(p: { recipient: Address; amount: bigint; nonce: bigint }) {
+  async pay(p: { recipient: Address; amount: bigint; nonce: bigint; validUntil: bigint }, _agg: number, d: AggregationDetails) {
     if (this.used.has(p.nonce)) throw new Error('NonceAlreadyUsed');
+    if ((await this.leafFor(p.recipient, p.amount, p.nonce, p.validUntil)) !== d.leaf) throw new Error('ProofNotAggregated');
     this.used.add(p.nonce);
+    this.paidSoFar += p.amount;
     this.paid.push({ recipient: p.recipient, amount: p.amount });
     return { txHash: '0xfeed' as Hex, status: 'success' as const };
   }
@@ -286,6 +295,62 @@ describe('Policy Vault agent', () => {
     kurier.hold = false;
     await agent.idle();
     expect(agent.get(slow)!.status).toBe('paid');
+  });
+
+  it('stops a slow drain: payments that each fit the hidden per-payment limit, until the hidden daily limit', async () => {
+    const { agent, chain, kurier } = setup();
+    const ids = [1, 2, 3].map(() => agent.submit({ recipient: VENDOR, amount: '450' }));
+    await agent.idle();
+    const [a, b, c] = ids.map((id) => agent.get(id)!);
+    expect(a).toMatchObject({ status: 'paid', mode: 'proof' });
+    expect(b).toMatchObject({ status: 'paid', mode: 'proof' });
+    expect(c).toMatchObject({ status: 'refused', reason: 'OUTSIDE_POLICY', mode: 'proof' });
+    expect(JSON.stringify(c)).not.toMatch(/DAILY/);
+    // Each proof stated what the vault had already paid through proofs that day.
+    expect(kurier.submitted.map((s) => s[5])).toEqual(['0', '450000000']);
+    expect(chain.paidSoFar).toBe(900_000_000n);
+  });
+
+  it('holds the next proof payment until the one in flight lands', async () => {
+    const { agent, kurier } = setup();
+    kurier.hold = true;
+    const first = agent.submit({ recipient: VENDOR, amount: '300' });
+    const second = agent.submit({ recipient: VENDOR, amount: '200' });
+    while (agent.get(second)!.status !== 'waiting') await new Promise((r) => setTimeout(r, 5));
+    expect(agent.get(first)!.status).toBe('verifying');
+    expect(kurier.submitted).toHaveLength(1);
+    kurier.hold = false;
+    await agent.idle();
+    expect(agent.get(first)!.status).toBe('paid');
+    expect(agent.get(second)!.status).toBe('paid');
+    expect(kurier.submitted.map((s) => s[5])).toEqual(['0', '300000000']);
+  });
+
+  it('refuses a payment that can never fit today at once, instead of queueing it behind a proof in flight', async () => {
+    const { agent, kurier } = setup();
+    kurier.hold = true;
+    const first = agent.submit({ recipient: VENDOR, amount: '300' });
+    const tooBig = agent.submit({ recipient: VENDOR, amount: '900' });
+    const stranger = agent.submit({ recipient: STRANGER, amount: '100' });
+    while (agent.get(stranger)!.status !== 'refused') await new Promise((r) => setTimeout(r, 5));
+    expect(agent.get(tooBig)).toMatchObject({ status: 'refused', reason: 'OUTSIDE_POLICY' });
+    expect(agent.get(first)!.status).toBe('verifying');
+    kurier.hold = false;
+    await agent.idle();
+  });
+
+  it('proves again if the day rolls over while a proof waits for zkVerify', async () => {
+    const { agent, chain, kurier } = setup();
+    chain.paidSoFar = 100_000_000n;
+    kurier.hold = true;
+    const id = agent.submit({ recipient: VENDOR, amount: '300' });
+    while (agent.get(id)!.status !== 'verifying') await new Promise((r) => setTimeout(r, 5));
+    chain.paidSoFar = 0n; // a new UTC day: the vault's counter reset, so the old proof is stale
+    kurier.hold = false;
+    await agent.idle();
+    expect(agent.get(id)).toMatchObject({ status: 'paid', mode: 'proof' });
+    expect(kurier.submitted.map((s) => s[5])).toEqual(['100000000', '0']);
+    expect(chain.paid).toEqual([{ recipient: VENDOR, amount: 300_000_000n }]);
   });
 
   it('rejects malformed raw transactions', () => {

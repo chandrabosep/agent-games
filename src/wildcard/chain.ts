@@ -32,6 +32,7 @@ export const VAULT_ABI = parseAbi([
   'function instantCap() view returns (uint256)',
   'function dailyCap() view returns (uint256)',
   'function instantRemaining() view returns (uint256)',
+  'function paidToday() view returns (uint256)',
   'function execute(address target, uint256 value, bytes data) returns (bytes)',
   'function setBlocked(address who, bool isBlocked)',
   'function setAgent(address newAgent)',
@@ -89,6 +90,8 @@ export interface InstantRules {
   instantCap: bigint;
   dailyCap: bigint;
   remaining: bigint;
+  /** Paid through proofs today. The hidden daily limit it is checked against is not public. */
+  paidToday: bigint;
 }
 
 export function chainFor(chainId: number): Chain {
@@ -199,12 +202,18 @@ export class VaultChain {
   }
 
   async instantRules(): Promise<InstantRules> {
-    const [instantCap, dailyCap, remaining] = await Promise.all([
+    const [instantCap, dailyCap, remaining, paidToday] = await Promise.all([
       this.read<bigint>('instantCap'),
       this.read<bigint>('dailyCap'),
       this.read<bigint>('instantRemaining'),
+      this.read<bigint>('paidToday'),
     ]);
-    return { instantCap, dailyCap, remaining };
+    return { instantCap, dailyCap, remaining, paidToday };
+  }
+
+  /** The vault's own count of today's proof payments: the `spentToday` its proofs must use. */
+  paidToday(): Promise<bigint> {
+    return this.read<bigint>('paidToday');
   }
 
   /** Sends `pay` (simulated first, so a revert costs no gas) and waits for the receipt. */
@@ -274,6 +283,10 @@ export class VaultChainPort {
 
   instantRules(): Promise<InstantRules> {
     return this.c.instantRules();
+  }
+
+  paidToday(): Promise<bigint> {
+    return this.c.paidToday();
   }
 
   async policyCommitment(): Promise<bigint> {

@@ -3,9 +3,12 @@
 //
 //   received → reading → refused                    (a public rule or the hidden policy said no)
 //                      → paying → paid              (instant: within the public budget)
-//                      → proving → verifying → paying → paid   (proof: the hidden policy, via zkVerify)
+//                      → [waiting →] proving → verifying → paying → paid   (proof: the hidden policy, via zkVerify)
 //                                                     → failed (any step)
 //
+// Proof payments go one at a time ("waiting" holds the next one): each proof states how much the
+// vault has already paid through proofs today, and the vault checks that against its own counter,
+// so a proof made while another payment is still landing would be stale.
 // Layer 1, the public rules, is decided by the vault contract itself: the agent simulates
 // `execute` and records the vault's answer. Layer 2, the hidden policy, is decided by
 // deterministic code that mirrors the circuit, then proven. The public log names the public rule
@@ -24,6 +27,7 @@ import { groth16Leaf, KURIER_DONE } from './zkverify.js';
 import type { Extracted, Intake } from './intake.js';
 import {
   addressToBigint,
+  bigintToAddress,
   circuitInput,
   policyCommitment,
   refusal,
@@ -31,7 +35,7 @@ import {
   type Policy,
 } from './policy.js';
 
-export type Status = 'received' | 'reading' | 'refused' | 'proving' | 'verifying' | 'paying' | 'paid' | 'failed';
+export type Status = 'received' | 'reading' | 'refused' | 'waiting' | 'proving' | 'verifying' | 'paying' | 'paid' | 'failed';
 
 /** Why a request was refused (public). The hidden policy's specific rule is never among them. */
 export type Refusal =
@@ -108,6 +112,8 @@ export interface ChainPort {
   /** The vault's revert for `pay` without a proof: what a hijacked agent would get. */
   simulatePayWithoutProof(p: { recipient: Address; amount: bigint; nonce: bigint; validUntil: bigint }): Promise<string>;
   instantRules(): Promise<InstantRules>;
+  /** What the vault has paid through proofs today: the `spentToday` its proofs must state. */
+  paidToday(): Promise<bigint>;
   policyCommitment(): Promise<bigint>;
   tokenBalance(): Promise<bigint>;
   nonceUsed(nonce: bigint): Promise<boolean>;
@@ -325,11 +331,16 @@ export class VaultAgent {
         await this.guard(fresh, () => this.decideAndProve(fresh));
         continue;
       }
-      const waiting = this.db
+      const inFlight = this.db
         .prepare("SELECT * FROM requests WHERE status IN ('verifying', 'paying') ORDER BY created_at")
         .all() as Row[];
-      if (waiting.length === 0) return;
-      for (const row of waiting) {
+      if (inFlight.length === 0) {
+        const next = this.db.prepare("SELECT * FROM requests WHERE status = 'waiting' ORDER BY created_at LIMIT 1").get() as Row | undefined;
+        if (!next) return;
+        await this.guard(next, () => this.prove(next.id, next.recipient as Address, parseAmount(next.amount ?? '', this.decimals)!));
+        continue;
+      }
+      for (const row of inFlight) {
         if (this.stopped) return;
         await this.guard(row, () => this.advanceProof(row));
         if (nextNew()) break;
@@ -427,28 +438,55 @@ export class VaultAgent {
     const recipient = action.counterparty as Address;
     const amount = action.amount;
     this.update(row.id, { mode: 'proof' });
+    if (this.proofInFlight()) {
+      // Today's proof count only grows, so a payment that doesn't fit it now won't fit later today:
+      // answer at once instead of queueing it behind the proof in flight.
+      const p = this.payment(recipient, amount, await this.d.chain.paidToday());
+      const why = refusal(this.d.policy, p);
+      if (why) return this.refuseOutsidePolicy(row.id, p, why);
+      this.update(row.id, { status: 'waiting' });
+      return;
+    }
+    await this.prove(row.id, recipient, amount);
+  }
 
-    // 2. Decide: deterministic, the circuit's own rules.
-    const nonce = BigInt('0x' + randomBytes(8).toString('hex'));
-    const validUntil = BigInt(Math.floor(this.now() / 1000) + this.ttl);
-    const payment: Payment = {
+  private payment(recipient: Address, amount: bigint, spentToday: bigint): Payment {
+    return {
       recipient: addressToBigint(recipient),
       amount,
-      nonce,
-      validUntil,
+      nonce: BigInt('0x' + randomBytes(8).toString('hex')),
+      validUntil: BigInt(Math.floor(this.now() / 1000) + this.ttl),
+      spentToday,
       vault: BigInt(this.d.chain.vault),
       chainId: BigInt(this.d.chain.chainId),
     };
-    const why = refusal(this.d.policy, payment);
-    if (why) {
-      // Show that the lock is in the contract: a hijacked agent skipping this check gets nowhere.
-      const hijacked = await this.d.chain.simulatePayWithoutProof({ recipient, amount, nonce, validUntil });
-      return this.refuse(row.id, 'OUTSIDE_POLICY', why, `execute → OverInstantLimit; pay without a proof → ${hijacked}`);
-    }
-    if ((await this.d.chain.tokenBalance()) < amount) return this.refuse(row.id, 'VAULT_BALANCE');
+  }
 
-    // 3. Prove, and check that the vault expects exactly this leaf before paying zkVerify to verify it.
-    this.update(row.id, { status: 'proving', nonce: nonce.toString(), valid_until: Number(validUntil) });
+  /** Shows that the lock is in the contract: a hijacked agent skipping this check gets nowhere. */
+  private async refuseOutsidePolicy(id: string, p: Payment, why: string): Promise<void> {
+    const hijacked = await this.d.chain.simulatePayWithoutProof({
+      recipient: getAddress(bigintToAddress(p.recipient)),
+      amount: p.amount,
+      nonce: p.nonce,
+      validUntil: p.validUntil,
+    });
+    this.refuse(id, 'OUTSIDE_POLICY', why, `execute → OverInstantLimit; pay without a proof → ${hijacked}`);
+  }
+
+  private proofInFlight(): boolean {
+    return this.db.prepare("SELECT 1 FROM requests WHERE status IN ('verifying', 'paying') LIMIT 1").get() !== undefined;
+  }
+
+  /** Layer 2: decide against the hidden policy (deterministic, the circuit's own rules), then prove. */
+  private async prove(id: string, recipient: Address, amount: bigint): Promise<void> {
+    const payment = this.payment(recipient, amount, await this.d.chain.paidToday());
+    const { nonce, validUntil } = payment;
+    const why = refusal(this.d.policy, payment);
+    if (why) return this.refuseOutsidePolicy(id, payment, why);
+    if ((await this.d.chain.tokenBalance()) < amount) return this.refuse(id, 'VAULT_BALANCE');
+
+    // Prove, and check that the vault expects exactly this leaf before paying zkVerify to verify it.
+    this.update(id, { status: 'proving', nonce: nonce.toString(), valid_until: Number(validUntil) });
     const proved = await this.d.prover.prove(circuitInput(this.d.policy, payment), 60_000);
     if (!proved.ok) throw new Error(`proving failed: ${proved.error}`);
     if (!proved.result.locallyVerified) throw new Error('proof did not verify locally');
@@ -458,8 +496,8 @@ export class VaultAgent {
 
     // 4. zkVerify.
     const jobId = await this.d.kurier.submit(this.d.vkHash, proved.result.proof, proved.result.publicSignals, this.d.chain.chainId);
-    this.update(row.id, { status: 'verifying', kurier_job_id: jobId, leaf, submitted_ms: this.now() });
-    log('vault.submitted', { id: row.id, jobId });
+    this.update(id, { status: 'verifying', kurier_job_id: jobId, leaf, submitted_ms: this.now() });
+    log('vault.submitted', { id, jobId });
   }
 
   /** One step for a proof in flight: returns at once if zkVerify or the chain isn't ready yet. */
@@ -494,8 +532,25 @@ export class VaultAgent {
       this.update(row.id, { status: 'paid', error: 'paid; transaction hash not recorded (restart during payment)' });
       return;
     }
-    this.update(row.id, { status: 'paying' });
     const amount = parseAmount(row.amount, this.decimals)!;
+    // The proof states today's proof spending. If that changed since (a new UTC day began), the
+    // vault would reject it: prove again rather than send a transaction that reverts.
+    const nowLeaf = await this.d.chain.leafFor(row.recipient as Address, amount, BigInt(row.nonce), BigInt(row.valid_until));
+    if (row.leaf && nowLeaf.toLowerCase() !== row.leaf.toLowerCase()) {
+      log('vault.reprove', { id: row.id });
+      this.update(row.id, {
+        status: 'waiting',
+        nonce: null,
+        valid_until: null,
+        kurier_job_id: null,
+        zkverify_tx_url: null,
+        aggregation_id: null,
+        leaf: null,
+        submitted_ms: null,
+      });
+      return;
+    }
+    this.update(row.id, { status: 'paying' });
     const paid = await this.d.chain.pay(
       { recipient: row.recipient as Address, amount, nonce: BigInt(row.nonce), validUntil: BigInt(row.valid_until) },
       job.aggregationId,

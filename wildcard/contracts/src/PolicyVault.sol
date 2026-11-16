@@ -23,11 +23,14 @@ interface IERC20 {
 ///
 /// 2. **A hidden policy, checked with a zero-knowledge proof via zkVerify.** Anything above the
 ///    instant budget needs `pay`. The owner stores only a Poseidon commitment to a policy: a
-///    per-payment limit, an expiry and an allowlist of recipients. The agent proves (Groth16,
-///    circuit wildcard/circuits/policy_payment.circom) that the payment fits it, zkVerify verifies
-///    the proof and publishes it in an aggregation on this chain, and `pay` rebuilds the proof's
-///    public inputs from its own arguments and state. So a proof only ever authorizes the exact
-///    payment it was made for, on this vault and this chain, once.
+///    per-payment limit, a daily limit, an expiry and an allowlist of recipients. The agent proves
+///    (Groth16, circuit wildcard/circuits/policy_payment.circom) that the payment fits it, given
+///    what the vault has already paid through proofs today. zkVerify verifies the proof and
+///    publishes it in an aggregation on this chain, and `pay` rebuilds the proof's public inputs
+///    from its own arguments and state, including its own day counter. So a proof only ever
+///    authorizes the exact payment it was made for, on this vault and this chain, once, and only
+///    while today's proof spending is what the proof assumed. That keeps every day's proof
+///    payments under a limit that is never published.
 ///
 /// The owner (a separate key, never given to the agent) sets the rules and can always withdraw.
 contract PolicyVault {
@@ -58,6 +61,10 @@ contract PolicyVault {
     uint256 public dailyCap;
     uint256 public spentDay;
     uint256 public spentToday;
+
+    /// @dev Proof payments in the current UTC day; read through `paidToday()`.
+    uint256 internal paidDay;
+    uint256 internal paidSoFar;
 
     event PolicyCommitted(uint256 commitment);
     event Paid(uint256 indexed nonce, address indexed recipient, uint256 amount, uint256 aggregationId, bytes32 leaf);
@@ -201,23 +208,31 @@ contract PolicyVault {
 
     // ---- Layer 2: the hidden policy, proven via zkVerify ----
 
-    /// @notice The proof's public inputs, in the circuit's order.
+    /// @notice What the vault has paid through proofs so far in the current UTC day. Public: it is
+    /// the sum of today's `Paid` events anyway. The limit it is checked against stays hidden.
+    function paidToday() public view returns (uint256) {
+        return paidDay == block.timestamp / 1 days ? paidSoFar : 0;
+    }
+
+    /// @notice The proof's public inputs, in the circuit's order. `spentToday` is the vault's own
+    /// counter, so the agent can't prove against a smaller one.
     function publicInputs(address recipient, uint256 amount, uint256 nonce, uint256 validUntil)
         public
         view
         returns (uint256[] memory inputs)
     {
-        inputs = new uint256[](7);
+        inputs = new uint256[](8);
         inputs[0] = policyCommitment;
         inputs[1] = uint256(uint160(recipient));
         inputs[2] = amount;
         inputs[3] = nonce;
         inputs[4] = validUntil;
-        inputs[5] = uint256(uint160(address(this)));
-        inputs[6] = block.chainid;
+        inputs[5] = paidToday();
+        inputs[6] = uint256(uint160(address(this)));
+        inputs[7] = block.chainid;
     }
 
-    /// @notice The zkVerify leaf a proof for this payment must have.
+    /// @notice The zkVerify leaf a proof for this payment must have, right now.
     function leafFor(address recipient, uint256 amount, uint256 nonce, uint256 validUntil)
         public
         view
@@ -227,8 +242,8 @@ contract PolicyVault {
     }
 
     /// @notice Pay `amount` to `recipient` if zkVerify has aggregated a valid policy proof for exactly
-    /// this payment. Anyone may call it: the proof, not the caller, authorizes the payment. The
-    /// public blocklist still applies.
+    /// this payment and today's proof spending so far. Anyone may call it: the proof, not the
+    /// caller, authorizes the payment. The public blocklist still applies.
     /// @param aggregationId, merklePath, leafCount, index: where the proof sits in the aggregation
     /// (Kurier's job-status `aggregationDetails` returns them).
     function pay(
@@ -252,6 +267,9 @@ contract PolicyVault {
         }
 
         nonceUsed[nonce] = true;
+        uint256 day = block.timestamp / 1 days;
+        paidSoFar = (paidDay == day ? paidSoFar : 0) + amount;
+        paidDay = day;
         _transfer(recipient, amount);
         emit Paid(nonce, recipient, amount, aggregationId, leaf);
     }

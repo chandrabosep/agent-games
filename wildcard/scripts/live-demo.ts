@@ -12,7 +12,14 @@ const onlyAt = argv.indexOf('--only');
 const only = onlyAt >= 0 ? argv.splice(onlyAt, 2)[1] : undefined;
 const [base = 'http://localhost:8787', out] = argv;
 const info = (await (await fetch(`${base}/vault/info`)).json()) as VaultPublicInfo;
-const cases: { label: string; expect: string; body: unknown }[] = examples(info).map((e) => ({ label: e.label, expect: e.expect, body: { tx: e.tx } }));
+// The slow drain is sent three times. With the demo policy (hidden: 500 per payment, 1500 a day)
+// and the 300 payment before it, the first two pay and the third would take the day past the limit.
+const DRAIN_EXPECT = ['Paid with a proof (day total 750).', 'Paid with a proof (day total 1200).', 'Refused: outside policy (1650 would pass the hidden daily limit).'];
+const cases: { label: string; expect: string; body: unknown }[] = examples(info).flatMap((e) =>
+  /slow drain/.test(e.label)
+    ? DRAIN_EXPECT.map((expect, i) => ({ label: `${e.label} #${i + 1}`, expect, body: { tx: e.tx } }))
+    : [{ label: e.label, expect: e.expect, body: { tx: e.tx } }],
+);
 if (info.freeText) {
   cases.push({
     label: 'Prompt-injected invoice',
@@ -46,7 +53,7 @@ let results: VaultRequest[] = [];
 for (;;) {
   results = await Promise.all(ids.map(async (id) => (await (await fetch(`${base}/vault/requests/${id}`)).json()) as VaultRequest));
   const open = results.filter((r) => !done.has(r.status)).length;
-  if (open === 0 || Date.now() - t0 > 15 * 60_000) break;
+  if (open === 0 || Date.now() - t0 > 30 * 60_000) break;
   console.log(`[${Math.round((Date.now() - t0) / 1000)}s] waiting on ${open}`);
   await new Promise((r) => setTimeout(r, 10_000));
 }

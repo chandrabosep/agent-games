@@ -18,6 +18,7 @@ const STRANGER = 0x3333333333333333333333333333333333333333n;
 
 const policy: Policy = {
   maxPerTx: 500_000_000n, // 500 USDC (6 decimals)
+  dailyLimit: 1_000_000_000n, // 1000 USDC a day through proofs
   policyExpiry: 1_800_000_000n,
   allowlist: [VENDOR_A, VENDOR_B],
   salt: 123456789n,
@@ -28,6 +29,7 @@ const good: Payment = {
   amount: 120_000_000n,
   nonce: 1n,
   validUntil: 1_790_000_000n,
+  spentToday: 300_000_000n,
   vault: 0xabcdefabcdefabcdefabcdefabcdefabcdefabcdn,
   chainId: 84532n,
 };
@@ -50,14 +52,16 @@ describe('Policy Vault circuit', () => {
     expect(out.result.publicSignals).toEqual(publicSignals(policy, good).map(String));
   });
 
-  it('accepts a payment of exactly maxPerTx and a deadline equal to policyExpiry', async () => {
-    const edge = { ...good, amount: policy.maxPerTx, validUntil: policy.policyExpiry };
+  it('accepts a payment of exactly maxPerTx, filling the day exactly, with a deadline equal to policyExpiry', async () => {
+    const edge = { ...good, amount: policy.maxPerTx, spentToday: policy.dailyLimit - policy.maxPerTx, validUntil: policy.policyExpiry };
     expect(refusal(policy, edge)).toBeNull();
     expect(await circuitAccepts(policy, edge)).toBe(true);
   });
 
   it.each([
     ['OVER_LIMIT', { amount: policy.maxPerTx + 1n }],
+    ['OVER_DAILY_LIMIT', { amount: 450_000_000n, spentToday: 600_000_000n }],
+    ['OVER_DAILY_LIMIT', { amount: 1n, spentToday: policy.dailyLimit }],
     ['ZERO_AMOUNT', { amount: 0n }],
     ['AFTER_POLICY_EXPIRY', { validUntil: policy.policyExpiry + 1n }],
   ] as const)('refuses %s, and the circuit refuses it too', async (reason, change) => {
@@ -82,9 +86,30 @@ describe('Policy Vault circuit', () => {
     expect(out.ok).toBe(false);
   });
 
+  it('refuses to hide past spending: a proof made for a lower spentToday commits to that value', async () => {
+    // The agent claims nothing was spent today so a 450 payment fits; the circuit accepts that
+    // statement, but spentToday is a public input, so the vault (which supplies its own counter,
+    // 600) computes a different leaf and the proof never verifies there.
+    const lied = { ...good, amount: 450_000_000n, spentToday: 0n };
+    const out = await prover.prove(circuitInput(policy, lied), 30_000);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.result.publicSignals[5]).toBe('0');
+    expect(publicSignals(policy, { ...lied, spentToday: 600_000_000n }).map(String)).not.toEqual(out.result.publicSignals);
+  });
+
+  it('refuses a looser daily limit than the committed one', async () => {
+    const looser = { ...policy, dailyLimit: policy.dailyLimit * 10n };
+    const input = circuitInput(looser, { ...good, spentToday: policy.dailyLimit });
+    input.policyCommitment = policyCommitment(policy).toString();
+    const out = await prover.prove(input, 30_000);
+    expect(out.ok).toBe(false);
+  });
+
   it('commitment changes with every policy field', () => {
     const base = policyCommitment(policy);
     expect(policyCommitment({ ...policy, maxPerTx: policy.maxPerTx - 1n })).not.toBe(base);
+    expect(policyCommitment({ ...policy, dailyLimit: policy.dailyLimit - 1n })).not.toBe(base);
     expect(policyCommitment({ ...policy, policyExpiry: policy.policyExpiry - 1n })).not.toBe(base);
     expect(policyCommitment({ ...policy, allowlist: [VENDOR_A] })).not.toBe(base);
     expect(policyCommitment({ ...policy, salt: policy.salt + 1n })).not.toBe(base);

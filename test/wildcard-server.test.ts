@@ -11,7 +11,7 @@ import { VaultAgent, type ChainPort, type ProofPort } from '../src/wildcard/agen
 import type { VaultPublicInfo } from '../src/wildcard/page.js';
 import type { Policy } from '../src/wildcard/policy.js';
 
-const policy: Policy = { maxPerTx: 10n, policyExpiry: 1_900_000_000n, allowlist: [1n], salt: 1n };
+const policy: Policy = { maxPerTx: 10n, dailyLimit: 20n, policyExpiry: 1_900_000_000n, allowlist: [1n], salt: 1n };
 // Never reached: these tests only submit requests that are refused before proving.
 const unused = () => { throw new Error('not expected'); };
 const chain = { vault: '0x5cAe9F71aCBB0f93108200AC3EA308C9ADfAf703', chainId: 84532, policyCommitment: unused, tokenBalance: unused,
@@ -19,7 +19,8 @@ const chain = { vault: '0x5cAe9F71aCBB0f93108200AC3EA308C9ADfAf703', chainId: 84
   token: async () => '0xe8fe0f1D30FE98c21525379663406043bC4e77e5',
   simulateExecute: async () => ({ ok: false, error: 'OverInstantLimit' }),
   simulatePayWithoutProof: async () => 'ProofNotAggregated',
-  instantRules: async () => ({ instantCap: 25_000_000n, dailyCap: 500_000_000n, remaining: 25_000_000n }),
+  instantRules: async () => ({ instantCap: 25_000_000n, dailyCap: 500_000_000n, remaining: 25_000_000n, paidToday: 450_000_000n }),
+  paidToday: async () => 0n,
 } as unknown as ChainPort;
 const kurier = { submit: unused, status: unused } as unknown as ProofPort;
 const info: VaultPublicInfo = {
@@ -65,7 +66,7 @@ describe('Policy Vault routes', () => {
     expect(page.headers.get('content-type')).toMatch(/text\/html/);
     expect(await page.text()).toContain(info.vault);
     expect(await (await fetch(`${base}/vault/info`)).json()).toEqual(info);
-    expect(await (await fetch(`${base}/vault/rules`)).json()).toEqual({ instantCap: '25000000', dailyCap: '500000000', remaining: '25000000' });
+    expect(await (await fetch(`${base}/vault/rules`)).json()).toEqual({ instantCap: '25000000', dailyCap: '500000000', remaining: '25000000', paidToday: '450000000' });
   });
 
   it('offers one ready-made transaction per outcome, and accepts raw transactions', async () => {

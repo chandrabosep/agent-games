@@ -106,14 +106,57 @@ contract PolicyVaultTest is Test {
 
     function test_publicInputsOrder() public view {
         uint256[] memory i = vault.publicInputs(VENDOR, 5, 6, 7);
-        assertEq(i.length, 7);
+        assertEq(i.length, 8);
         assertEq(i[0], COMMITMENT);
         assertEq(i[1], uint256(uint160(VENDOR)));
         assertEq(i[2], 5);
         assertEq(i[3], 6);
         assertEq(i[4], 7);
-        assertEq(i[5], uint256(uint160(address(vault))));
-        assertEq(i[6], 84532);
+        assertEq(i[5], 0); // paid through proofs today
+        assertEq(i[6], uint256(uint160(address(vault))));
+        assertEq(i[7], 84532);
+    }
+
+    // The hidden daily limit: every proof is made for the vault's own day counter, so proofs can't
+    // be stacked past the limit.
+    function test_proofPaymentsRaiseTheDayCounter() public {
+        uint256 until = block.timestamp + 600;
+        _publish(120e6, 1, until);
+        _pay(120e6, 1, until);
+        assertEq(vault.paidToday(), 120e6);
+        assertEq(vault.publicInputs(VENDOR, 5, 6, 7)[5], 120e6);
+        _publish(80e6, 2, until);
+        _pay(80e6, 2, until);
+        assertEq(vault.paidToday(), 200e6);
+    }
+
+    function test_proofForAnOlderDayCounterDoesNotVerify() public {
+        uint256 until = block.timestamp + 600;
+        // Two proofs made while the counter was 0, each fitting the hidden daily limit alone.
+        _publish(120e6, 1, until);
+        _publish(120e6, 2, until);
+        _pay(120e6, 1, until);
+        // The second assumed nothing was paid today; the vault now says 120.
+        vm.expectRevert(PolicyVault.ProofNotAggregated.selector);
+        _pay(120e6, 2, until);
+        assertEq(usdc.balanceOf(VENDOR), 120e6);
+    }
+
+    function test_dayCounterResetsAtUtcMidnight() public {
+        uint256 until = block.timestamp + 2 days;
+        _publish(120e6, 1, until);
+        _pay(120e6, 1, until);
+        vm.warp((block.timestamp / 1 days + 1) * 1 days);
+        assertEq(vault.paidToday(), 0);
+        _publish(50e6, 2, until);
+        _pay(50e6, 2, until);
+        assertEq(vault.paidToday(), 50e6);
+    }
+
+    function test_instantPaymentsDontTouchTheProofCounter() public {
+        vm.prank(AGENT);
+        vault.execute(address(usdc), 0, _transferCall(VENDOR, 10e6));
+        assertEq(vault.paidToday(), 0);
     }
 
     function test_paysWhenProofAggregated() public {

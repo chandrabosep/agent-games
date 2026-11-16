@@ -1,7 +1,7 @@
 // Policy Vault (Wildcard entry): the payment Policy and the exact rules of
 // wildcard/circuits/policy_payment.circom, mirrored so the agent knows before proving
 // whether the circuit will accept a payment. Tested against the circuit.
-import { poseidon1, poseidon2, poseidon4 } from 'poseidon-lite';
+import { poseidon1, poseidon2, poseidon5 } from 'poseidon-lite';
 
 /** Allowlist tree depth in the circuit: up to 256 recipients. */
 export const TREE_DEPTH = 8;
@@ -13,6 +13,8 @@ const U160 = (1n << 160n) - 1n;
 export interface Policy {
   /** Largest single payment, in the token's smallest unit. */
   maxPerTx: bigint;
+  /** Most the vault may pay through proofs in one UTC day, in the token's smallest unit. */
+  dailyLimit: bigint;
   /** Unix seconds. No payment may have a deadline after this. */
   policyExpiry: bigint;
   /** Recipient addresses as integers. */
@@ -28,12 +30,20 @@ export interface Payment {
   nonce: bigint;
   /** Unix seconds. The vault refuses to pay after this. */
   validUntil: bigint;
+  /** What the vault has already paid through proofs today (its own counter, read from the chain). */
+  spentToday: bigint;
   /** Vault contract address as an integer. */
   vault: bigint;
   chainId: bigint;
 }
 
-export type PolicyRefusal = 'NOT_ALLOWLISTED' | 'OVER_LIMIT' | 'ZERO_AMOUNT' | 'AFTER_POLICY_EXPIRY' | 'OUT_OF_RANGE';
+export type PolicyRefusal =
+  | 'NOT_ALLOWLISTED'
+  | 'OVER_LIMIT'
+  | 'OVER_DAILY_LIMIT'
+  | 'ZERO_AMOUNT'
+  | 'AFTER_POLICY_EXPIRY'
+  | 'OUT_OF_RANGE';
 
 export function addressToBigint(address: string): bigint {
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error(`not an address: ${address}`);
@@ -74,16 +84,18 @@ export function allowlistRoot(policy: Policy): bigint {
 
 /** What the vault stores. */
 export function policyCommitment(policy: Policy): bigint {
-  return poseidon4([policy.maxPerTx, policy.policyExpiry, allowlistRoot(policy), policy.salt]);
+  return poseidon5([policy.maxPerTx, policy.dailyLimit, policy.policyExpiry, allowlistRoot(policy), policy.salt]);
 }
 
 /** The circuit's rules, in order. null means the circuit will accept the payment. */
 export function refusal(policy: Policy, p: Payment): PolicyRefusal | null {
   if (p.recipient < 0n || p.recipient > U160) return 'OUT_OF_RANGE';
   if (p.amount < 0n || p.amount > U128 || policy.maxPerTx < 0n || policy.maxPerTx > U128) return 'OUT_OF_RANGE';
+  if (p.spentToday < 0n || p.spentToday > U128 || policy.dailyLimit < 0n || policy.dailyLimit > U128) return 'OUT_OF_RANGE';
   if (p.validUntil < 0n || p.validUntil > U64 || policy.policyExpiry < 0n || policy.policyExpiry > U64) return 'OUT_OF_RANGE';
   if (p.amount === 0n) return 'ZERO_AMOUNT';
   if (p.amount > policy.maxPerTx) return 'OVER_LIMIT';
+  if (p.spentToday + p.amount > policy.dailyLimit) return 'OVER_DAILY_LIMIT';
   if (p.validUntil > policy.policyExpiry) return 'AFTER_POLICY_EXPIRY';
   if (!policy.allowlist.includes(p.recipient)) return 'NOT_ALLOWLISTED';
   return null;
@@ -91,7 +103,7 @@ export function refusal(policy: Policy, p: Payment): PolicyRefusal | null {
 
 /** Public signals in the circuit's order; the vault builds the same list. */
 export function publicSignals(policy: Policy, p: Payment): bigint[] {
-  return [policyCommitment(policy), p.recipient, p.amount, p.nonce, p.validUntil, p.vault, p.chainId];
+  return [policyCommitment(policy), p.recipient, p.amount, p.nonce, p.validUntil, p.spentToday, p.vault, p.chainId];
 }
 
 /** Circuit input. Throws if the recipient isn't on the allowlist (no Merkle path exists). */
@@ -113,9 +125,11 @@ export function circuitInput(policy: Policy, p: Payment): Record<string, string 
     amount: p.amount.toString(),
     nonce: p.nonce.toString(),
     validUntil: p.validUntil.toString(),
+    spentToday: p.spentToday.toString(),
     vault: p.vault.toString(),
     chainId: p.chainId.toString(),
     maxPerTx: policy.maxPerTx.toString(),
+    dailyLimit: policy.dailyLimit.toString(),
     policyExpiry: policy.policyExpiry.toString(),
     salt: policy.salt.toString(),
     pathElements,
@@ -123,11 +137,13 @@ export function circuitInput(policy: Policy, p: Payment): Record<string, string 
   };
 }
 
-/** Policy from JSON (env): {maxPerTx, policyExpiry, allowlist: [address], salt}, numbers as strings. */
+/** Policy from JSON (env): {maxPerTx, dailyLimit, policyExpiry, allowlist: [address], salt}, numbers as strings. */
 export function parsePolicy(json: string): Policy {
-  const raw = JSON.parse(json) as { maxPerTx: string; policyExpiry: string; allowlist: string[]; salt: string };
+  const raw = JSON.parse(json) as { maxPerTx: string; dailyLimit?: string; policyExpiry: string; allowlist: string[]; salt: string };
+  if (raw.dailyLimit === undefined) throw new Error('policy has no dailyLimit (the circuit needs one)');
   return {
     maxPerTx: BigInt(raw.maxPerTx),
+    dailyLimit: BigInt(raw.dailyLimit),
     policyExpiry: BigInt(raw.policyExpiry),
     allowlist: raw.allowlist.map(addressToBigint),
     salt: BigInt(raw.salt),

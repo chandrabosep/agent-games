@@ -34,8 +34,14 @@ export function examples(info: VaultPublicInfo): Example[] {
     t(token, encodeFunctionData({ abi: ERC20_ABI, functionName: 'transfer', args: [to as `0x${string}`, parseUnits(amount, 6)] }));
   return [
     { label: `Pay 5 ${sym} to the demo vendor`, expect: 'Paid instantly: inside the public instant budget, no proof needed.', tx: transfer(vendor, '5') },
-    { label: `Pay 300 ${sym} to the demo vendor`, expect: 'Over the instant budget, so it needs a policy proof: proved, verified on zkVerify, paid in about 1–3 minutes.', tx: transfer(vendor, '300') },
+    { label: `Pay 300 ${sym} to the demo vendor`, expect: 'Over the instant budget, so it needs a policy proof: proved, verified on zkVerify, paid in about 3 minutes.', tx: transfer(vendor, '300') },
     { label: `Pay 900 ${sym} to the demo vendor`, expect: 'Over the hidden per-payment limit: refused as "outside policy". No proof can exist, and the vault refuses pay() without one.', tx: transfer(vendor, '900') },
+    {
+      label: `Pay 450 ${sym} to the demo vendor, again and again (a slow drain)`,
+      expect:
+        'Each 450 fits the hidden per-payment limit, so the first ones pay with a proof. But every proof also states what the vault already paid through proofs today, and the vault checks that against its own counter. Once today\'s total would pass the hidden daily limit, the next one is refused as "outside policy", though the payment itself never changed.',
+      tx: transfer(vendor, '450'),
+    },
     {
       label: `Approve unlimited ${sym} to a drainer`,
       expect: 'Blocked instantly by the vault contract: unlimited approval.',
@@ -95,7 +101,7 @@ button:disabled { opacity: .5; cursor: default; }
 </style></head>
 <body><main>
 <h1>Policy Vault</h1>
-<p class="lede">A wallet for an AI agent that checks every transaction <strong>before it runs</strong>, and can't be talked out of it. The agent never holds the funds: it can only ask the vault on ${esc(info.chainName)} to act. Drainer patterns are blocked on the spot by public rules in the contract. Small payments go through at once. Anything bigger needs a zero-knowledge proof that it fits the owner's <strong>hidden</strong> policy, verified on zkVerify, and the vault checks zkVerify's result before it releases a cent. A hijacked or prompt-injected agent can't get around either layer.</p>
+<p class="lede">A wallet for an AI agent that checks every transaction <strong>before it runs</strong>, and can't be talked out of it. The agent never holds the funds: it can only ask the vault on ${esc(info.chainName)} to act. Drainer patterns are blocked on the spot by public rules in the contract. Small payments go through at once. Anything bigger needs a zero-knowledge proof that it fits the owner's <strong>hidden</strong> policy, including a daily total, verified on zkVerify, and the vault checks zkVerify's result before it releases a cent. A hijacked or prompt-injected agent can't get around either layer, and can't drain the vault slowly either: an attacker can't stay just under a limit they can't see.</p>
 
 <h2>Two layers of rules</h2>
 <div class="grid">
@@ -108,7 +114,12 @@ button:disabled { opacity: .5; cursor: default; }
     </ul>
   </div>
   <div class="card"><h3>2 · Hidden policy: a ZK proof via zkVerify</h3>
-    <p class="hint">Anything over the instant budget needs a Groth16 proof that this exact payment fits the owner's policy: a per-payment limit, an expiry and an allowlist of recipients. Only the policy's hash is on chain. A refusal here says only "outside policy", so nobody can probe the limits.</p>
+    <ul class="rules">
+      <li>A per-payment limit and an allowlist of recipients.</li>
+      <li>A <strong>daily limit</strong> on proof payments. Each proof states what the vault has already paid through proofs today (<strong id="paid">…</strong> so far), and the vault puts its own counter into the proof's public inputs, so the agent can't understate it.</li>
+      <li>An expiry date.</li>
+    </ul>
+    <p class="hint">Anything over the instant budget needs a Groth16 proof that this exact payment fits. Only the policy's hash is on chain. A refusal here says only "outside policy", never which rule, so nobody learns where the limits are.</p>
     ${info.demoVendor ? `<span class="k">Demo vendor (on the allowlist, published for this demo)</span><code>${esc(info.demoVendor)}</code>` : ''}
     <span class="k">Policy commitment (Poseidon)</span><code>${esc(info.policyCommitment)}</code>
   </div>
@@ -156,7 +167,7 @@ const EXAMPLES = ${JSON.stringify(ex).replace(/</g, '\\u003c')};
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const short = (h) => h ? esc(h.slice(0, 10)) + '…' : '';
 const $ = (id) => document.getElementById(id);
-const WAIT = { received: 'queued', reading: 'reading', proving: 'proving', verifying: 'zkVerify', paying: 'sending' };
+const WAIT = { received: 'queued', reading: 'reading', waiting: 'next proof', proving: 'proving', verifying: 'zkVerify', paying: 'sending' };
 const REASON = { OUTSIDE_POLICY: 'outside policy', VAULT_BALANCE: 'vault balance too low', INTAKE_UNAVAILABLE: 'could not read request',
   INTAKE_NO_PAYMENT: 'no payment requested', INTAKE_NO_ADDRESS: 'no recipient address', INTAKE_BAD_CHECKSUM: 'address checksum wrong (typo?)', INTAKE_BAD_AMOUNT: 'unclear amount', INTAKE_CURRENCY: 'unsupported currency',
   BLOCKED_ETH_TRANSFER: 'blocked: ETH transfer', BLOCKED_APPROVAL_FOR_ALL: 'blocked: setApprovalForAll', BLOCKED_UNLIMITED_APPROVAL: 'blocked: unlimited approval',
@@ -185,6 +196,7 @@ async function rules() {
   try {
     const r = await (await fetch('/vault/rules')).json();
     $('cap').textContent = units(r.instantCap) + ' ' + SYM; $('daily').textContent = units(r.dailyCap) + ' ' + SYM; $('left').textContent = units(r.remaining) + ' ' + SYM;
+    if (r.paidToday != null) $('paid').textContent = units(r.paidToday) + ' ' + SYM;
   } catch {}
 }
 document.querySelectorAll('[data-ex]').forEach((b) => b.onclick = () => {
