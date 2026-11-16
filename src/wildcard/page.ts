@@ -41,50 +41,49 @@ export function examples(info: VaultPublicInfo): Example[] {
   return [
     {
       label: `Pay 5 ${sym} to the demo vendor`,
-      expect: 'Paid instantly: inside the public instant budget, no proof needed.',
+      expect: 'Paid instantly, within the public budget.',
       outcome: 'instant',
       tag: 'Instant',
       tx: transfer(vendor, '5'),
     },
     {
       label: `Pay 300 ${sym} to the demo vendor`,
-      expect: 'Over the instant budget, so it needs a policy proof: proved, verified on zkVerify, paid in about 3 minutes.',
+      expect: 'Proved, verified on zkVerify, then paid. About 3 minutes.',
       outcome: 'proof',
       tag: 'Proof · ~3 min',
       tx: transfer(vendor, '300'),
     },
     {
-      label: `Pay 450 ${sym} to the demo vendor, again and again (a slow drain)`,
-      expect:
-        'Each 450 fits the hidden per-payment limit, so the first ones pay with a proof. But every proof also states what the vault already paid through proofs today, and the vault checks that against its own counter. Once today\'s total would pass the hidden daily limit, the next one is refused as "outside policy", though the payment itself never changed.',
+      label: `Pay 450 ${sym} repeatedly (slow drain)`,
+      expect: 'Paid with a proof until the hidden daily limit is reached, then refused as outside policy.',
       outcome: 'proof',
       tag: 'Proof, then refused',
       tx: transfer(vendor, '450'),
     },
     {
       label: `Pay 900 ${sym} to the demo vendor`,
-      expect: 'Over the hidden per-payment limit: refused as "outside policy". No proof can exist, and the vault refuses pay() without one.',
+      expect: 'Refused as outside policy: over the hidden per-payment limit.',
       outcome: 'refused',
       tag: 'Outside policy',
       tx: transfer(vendor, '900'),
     },
     {
       label: `Approve unlimited ${sym} to a drainer`,
-      expect: 'Blocked instantly by the vault contract: unlimited approval.',
+      expect: 'Blocked by the contract: unlimited approval.',
       outcome: 'blocked',
       tag: 'Blocked',
       tx: t(token, encodeFunctionData({ abi: ERC20_ABI, functionName: 'approve', args: [drainer as `0x${string}`, maxUint256] })),
     },
     {
       label: 'setApprovalForAll to a drainer',
-      expect: 'Blocked instantly by the vault contract: setApprovalForAll.',
+      expect: 'Blocked by the contract: setApprovalForAll.',
       outcome: 'blocked',
       tag: 'Blocked',
       tx: t(token, encodeFunctionData({ abi: ERC20_ABI, functionName: 'setApprovalForAll', args: [drainer as `0x${string}`, true] })),
     },
     {
       label: `Pay 1 ${sym} to the blocklisted drainer`,
-      expect: 'Blocked instantly by the vault contract: blocklisted address.',
+      expect: 'Blocked by the contract: blocklisted address.',
       outcome: 'blocked',
       tag: 'Blocked',
       tx: transfer(drainer, '1'),
@@ -330,10 +329,10 @@ footer .wrap { display: flex; gap: 16px; justify-content: space-between; flex-wr
 <main class="wrap">
 <div class="hero">
   <div>
-    <p class="eyebrow">Pre-sign guard for AI agents · zkVerify</p>
+    <p class="eyebrow">Pre-sign guard for AI agents</p>
     <h1>A wallet your AI agent can’t be talked out of.</h1>
-    <p class="sub">The agent never holds the funds. It can only ask this vault to act, and the vault checks every transaction before it runs. Public rules in the contract stop drainer patterns on the spot. Anything bigger needs a zero-knowledge proof that it fits the owner’s <strong>hidden</strong> policy, verified on zkVerify.</p>
-    <div class="cta"><a class="btn" href="#try">Try a transaction</a><a class="btn secondary" href="#log">See the live log</a></div>
+    <p class="sub">The agent never holds funds. The vault checks every transaction before it runs: public rules block drainers instantly, and larger payments need a zero-knowledge proof of a hidden policy, verified on zkVerify.</p>
+    <div class="cta"><a class="btn" href="#try">Try a transaction</a><a class="btn secondary" href="#log">Live log</a></div>
   </div>
 
   <aside class="panel today" aria-label="Today on chain">
@@ -342,68 +341,68 @@ footer .wrap { display: flex; gap: 16px; justify-content: space-between; flex-wr
       <div class="stat-k">Instant budget left</div>
       <div class="stat-v"><span id="left">—</span> <small>of <span id="daily">—</span> ${sym}</small></div>
       <div class="meter" aria-hidden="true"><i id="meter"></i></div>
-      <p class="stat-n">Public rule: payments up to <span id="cap">—</span> ${sym} each go through with no proof.</p>
+      <p class="stat-n">Up to <span id="cap">—</span> ${sym} per payment, no proof.</p>
     </div>
     <div class="stat">
       <div class="stat-k">Paid with proofs <span class="hidden-tag">${icon('lock')}limit hidden</span></div>
       <div class="stat-v"><span id="paid">—</span> <small>${sym}</small></div>
-      <p class="stat-n">The vault puts this number into every proof, so the agent can’t understate it. Once a payment would pass the hidden daily limit, no valid proof exists.</p>
+      <p class="stat-n">Checked in every proof against a hidden daily limit.</p>
     </div>
-    <p class="today-f" id="rulesnote">Read from the vault contract every 30 seconds.</p>
+    <p class="today-f" id="rulesnote">Live from the vault contract.</p>
   </aside>
 </div>
 
 <section id="how">
-  <div class="sec-h"><h2>How it works</h2><p>Two layers, both enforced by the vault contract. Neither one trusts the agent.</p></div>
+  <div class="sec-h"><h2>How it works</h2><p>Two layers, both enforced on chain.</p></div>
   <div class="steps">
     <div class="step">
       <div class="step-n">01</div>
-      <h3>The agent asks</h3>
-      <p>It sends a transaction, or an invoice it read with Claude. Claude’s output is treated as untrusted input, not as an approval.</p>
+      <h3>Request</h3>
+      <p>A transaction, or an invoice parsed by Claude. Always treated as untrusted.</p>
     </div>
     <div class="step">
       <div class="step-n">02</div>
       <h3>Public rules</h3>
-      <p>In the contract, instant, no proof.</p>
+      <p>Instant, in the contract.</p>
       <ul>
-        <li>No unlimited approvals or <code>setApprovalForAll</code></li>
-        <li>No ETH out, only the vault’s token</li>
-        <li>Nothing to or from a blocklisted address</li>
-        <li>Small payments pass at once</li>
+        <li>No unlimited approvals</li>
+        <li>No <code>setApprovalForAll</code></li>
+        <li>No ETH transfers</li>
+        <li>No blocklisted addresses</li>
       </ul>
       <div class="chips"><span class="tag blocked">Blocked</span><span class="tag instant">Paid instantly</span></div>
     </div>
     <div class="step">
       <div class="step-n">03</div>
       <h3>Hidden policy</h3>
-      <p>Bigger payments need a Groth16 proof that they fit:</p>
+      <p>Larger payments need a Groth16 proof of:</p>
       <ul>
-        <li>a per-payment limit</li>
-        <li>an allowlist of recipients</li>
-        <li>a daily limit, so no slow drain</li>
-        <li>an expiry date</li>
+        <li>Per-payment limit</li>
+        <li>Recipient allowlist</li>
+        <li>Daily limit</li>
+        <li>Expiry</li>
       </ul>
       <div class="chips"><span class="tag proof">Verified on zkVerify</span></div>
     </div>
     <div class="step">
       <div class="step-n">04</div>
-      <h3>The vault pays</h3>
-      <p>Only after it finds the proof in zkVerify’s aggregation on ${esc(info.chainName)}. Only the policy’s hash is on chain, and a refusal says just “outside policy”, never which rule. An attacker can’t stay under a limit they can’t see.</p>
+      <h3>Payment</h3>
+      <p>Released only after zkVerify confirms the proof. Refusals never reveal which rule failed.</p>
       <div class="chips"><span class="tag paid">Paid</span><span class="tag refused">Outside policy</span></div>
     </div>
   </div>
 </section>
 
 <section id="try">
-  <div class="sec-h"><h2>Try it</h2><p>These run for real on ${esc(info.chainName)}. Pick a scenario to fill the form, then check and run it.</p></div>
+  <div class="sec-h"><h2>Try it</h2><p>Live on ${esc(info.chainName)}. Pick a scenario, then run it.</p></div>
   <div class="try">
     <div>
       ${ex.length
         ? `<p class="list-h">Scenarios</p><div class="scenarios">${ex
             .map((e, i) => `<button class="scenario" data-ex="${i}" aria-pressed="false"><span>${esc(e.label)}</span><span class="tag ${e.outcome}">${esc(e.tag)}</span></button>`)
             .join('')}</div>
-      <p class="note">The demo vendor is on the hidden allowlist. The drainer is on the public blocklist. Proof payments run one at a time, so a queued one may wait a few minutes.</p>`
-        : '<p class="note">Demo scenarios are off on this deployment. Paste a transaction instead.</p>'}
+      <p class="note">Proof payments run one at a time.</p>`
+        : '<p class="note">No demo scenarios on this deployment.</p>'}
     </div>
 
     <div class="panel form">
@@ -412,7 +411,7 @@ footer .wrap { display: flex; gap: 16px; justify-content: space-between; flex-wr
         <button class="tab" role="tab" id="tab-inv" aria-controls="pane-inv" aria-selected="false" tabindex="-1">Invoice</button>
       </div>
       <div class="pane" id="pane-tx" role="tabpanel" aria-labelledby="tab-tx">
-        <label for="to">To <span>· the contract called</span></label>
+        <label for="to">To</label>
         <input id="to" class="mono-in" placeholder="0x…" spellcheck="false" autocomplete="off">
         <label for="data">Calldata</label>
         <textarea id="data" class="mono-in" placeholder="0xa9059cbb…" spellcheck="false"></textarea>
@@ -423,11 +422,11 @@ footer .wrap { display: flex; gap: 16px; justify-content: space-between; flex-wr
       </div>
       <div class="pane" id="pane-inv" role="tabpanel" aria-labelledby="tab-inv" hidden>
         ${info.freeText
-          ? `<label for="text">Invoice or payment request <span>· Claude reads it; the vault doesn’t trust what it says</span></label>
+          ? `<label for="text">Invoice text</label>
         <textarea id="text" maxlength="4000" rows="5" placeholder="Invoice #1042 from the demo vendor. Amount due: 12.00 ${sym}. Pay to 0x…"></textarea>
         <div class="fills">
-          <button class="fill" data-fill="invoice">Fill a normal invoice</button>
-          <button class="fill" data-fill="inject">Fill a prompt injection</button>
+          <button class="fill" data-fill="invoice">Normal invoice</button>
+          <button class="fill" data-fill="inject">Prompt injection</button>
         </div>`
           : `<label for="recipient">Recipient</label><input id="recipient" class="mono-in" placeholder="0x…" spellcheck="false">
         <label for="amount">Amount <span>· ${sym}</span></label><input id="amount" placeholder="12.00" inputmode="decimal">`}
@@ -438,7 +437,7 @@ footer .wrap { display: flex; gap: 16px; justify-content: space-between; flex-wr
 </section>
 
 <section id="log">
-  <div class="sec-h"><h2>Live log</h2><p>Every request anyone sends, newest first. Refreshes every 5 seconds.</p></div>
+  <div class="sec-h"><h2>Live log</h2><p>All requests, newest first.</p></div>
   <table class="log">
     <thead><tr><th>When</th><th>Request</th><th>Result</th><th>zkVerify</th><th>${esc(info.chainName)}</th></tr></thead>
     <tbody id="logbody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
@@ -448,19 +447,19 @@ footer .wrap { display: flex; gap: 16px; justify-content: space-between; flex-wr
 <section id="contracts">
   <div class="cols">
     <div>
-      <div class="sec-h"><h2>Contracts and keys</h2></div>
+      <div class="sec-h"><h2>Contracts</h2></div>
       <div class="refs">
-        ${ref('Vault', info.vault, 'Holds the funds, enforces both layers', explorerLink(info.vault))}
-        ${ref('Token', info.token, `${sym}, a test token`, explorerLink(info.token))}
-        ${ref('Policy commitment', info.policyCommitment, 'Poseidon hash of the hidden policy')}
-        ${ref('zkVerify vkHash', info.vkHash, 'The policy circuit’s verification key')}
-        ${info.demoVendor ? ref('Demo vendor', info.demoVendor, 'On the allowlist, published for this demo', explorerLink(info.demoVendor)) : ''}
-        ${info.demoDrainer ? ref('Demo drainer', info.demoDrainer, 'On the public blocklist', explorerLink(info.demoDrainer)) : ''}
+        ${ref('Vault', info.vault, 'Holds funds, enforces rules', explorerLink(info.vault))}
+        ${ref('Token', info.token, 'Test token', explorerLink(info.token))}
+        ${ref('Policy commitment', info.policyCommitment, 'Hash of the hidden policy')}
+        ${ref('zkVerify vkHash', info.vkHash, 'Circuit verification key')}
+        ${info.demoVendor ? ref('Demo vendor', info.demoVendor, 'Allowlisted', explorerLink(info.demoVendor)) : ''}
+        ${info.demoDrainer ? ref('Demo drainer', info.demoDrainer, 'Blocklisted', explorerLink(info.demoDrainer)) : ''}
       </div>
     </div>
     <div class="api">
       <div class="sec-h"><h2>API</h2></div>
-      <p>Send the vault a request the same way the page does. No key needed; the vault decides.</p>
+      <p>No key required.</p>
 <pre><b>POST /vault/requests</b>
 {"tx": {"to": "0x…", "data": "0x…", "value": "0"}}
 {"text": "Invoice #1042 … pay to 0x…"}
@@ -472,8 +471,8 @@ footer .wrap { display: flex; gap: 16px; justify-content: space-between; flex-wr
 </main>
 
 <footer><div class="wrap">
-  <span>Policy Vault · a zkVerify Agent Games entry · testnet only, test tokens only</span>
-  <a class="ext" href="https://github.com/chandrabosep/agent-games/tree/main/wildcard" target="_blank" rel="noopener">Source on GitHub ${icon('arrow')}</a>
+  <span>Policy Vault · zkVerify Agent Games · Testnet only</span>
+  <a class="ext" href="https://github.com/chandrabosep/agent-games/tree/main/wildcard" target="_blank" rel="noopener">GitHub ${icon('arrow')}</a>
 </div></footer>
 
 <script>
@@ -486,11 +485,11 @@ const ARROW = ${JSON.stringify(icon('arrow'))};
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const short = (h) => h ? esc(h.slice(0, 6)) + '…' + esc(h.slice(-4)) : '';
 const $ = (id) => document.getElementById(id);
-const WAIT = { received: 'Queued', reading: 'Reading invoice', waiting: 'Waiting for the proof ahead', proving: 'Proving', verifying: 'On zkVerify', paying: 'Sending' };
+const WAIT = { received: 'Queued', reading: 'Reading invoice', waiting: 'Queued for proof', proving: 'Proving', verifying: 'On zkVerify', paying: 'Sending' };
 const REASON = { OUTSIDE_POLICY: 'Outside policy', VAULT_BALANCE: 'Vault balance too low', INTAKE_UNAVAILABLE: 'Could not read the request',
   INTAKE_NO_PAYMENT: 'No payment requested', INTAKE_NO_ADDRESS: 'No recipient address', INTAKE_BAD_CHECKSUM: 'Address checksum wrong (typo?)', INTAKE_BAD_AMOUNT: 'Unclear amount', INTAKE_CURRENCY: 'Unsupported currency',
   BLOCKED_ETH_TRANSFER: 'Blocked: ETH transfer', BLOCKED_APPROVAL_FOR_ALL: 'Blocked: setApprovalForAll', BLOCKED_UNLIMITED_APPROVAL: 'Blocked: unlimited approval',
-  BLOCKED_ADDRESS: 'Blocked: blocklisted address', UNSUPPORTED_CALL: 'Blocked: unsupported call', OVER_INSTANT_LIMIT: "Over the instant budget (approvals can't use a proof)" };
+  BLOCKED_ADDRESS: 'Blocked: blocklisted address', UNSUPPORTED_CALL: 'Blocked: unsupported call', OVER_INSTANT_LIMIT: 'Over instant budget' };
 const units = (v) => {
   const s = String(v).padStart(7, '0');
   const f = s.slice(-6).replace(/0+$/, '');
@@ -507,7 +506,7 @@ const ext = (href, text) => '<a class="ext" href="' + esc(href) + '" target="_bl
 
 function row(r) {
   let result;
-  if (r.status === 'paid') result = '<span class="tag paid">Paid</span><span class="sub2">' + (r.mode === 'proof' ? 'with a proof' : 'instantly, no proof') + '</span>';
+  if (r.status === 'paid') result = '<span class="tag paid">Paid</span><span class="sub2">' + (r.mode === 'proof' ? 'With proof' : 'Instant') + '</span>';
   else if (r.status === 'refused') result = '<span class="tag ' + (String(r.reason).startsWith('BLOCKED') || r.reason === 'UNSUPPORTED_CALL' ? 'blocked' : 'refused') + '">' + esc(REASON[r.reason] || r.reason) + '</span>';
   else if (r.status === 'failed') result = '<span class="tag failed">Failed</span><span class="sub2">' + esc((r.error || '').slice(0, 120)) + '</span>';
   else result = '<span class="tag wait">' + esc(WAIT[r.status] || r.status) + '</span>';
@@ -520,14 +519,14 @@ function row(r) {
 
   const zk = r.zkVerifyTxUrl ? ext(r.zkVerifyTxUrl, 'Proof') + (r.aggregationId != null ? '<span class="sub2">aggregation ' + esc(r.aggregationId) + '</span>' : '') : '';
   const tx = r.payTx && r.payTx.startsWith('0x') && r.payTx.length === 66
-    ? ext(EXPLORER + '/tx/' + r.payTx, '<code>' + short(r.payTx) + '</code>') + (r.secondsToPaid ? '<span class="sub2">' + Math.round(r.secondsToPaid) + ' s after the proof</span>' : '')
+    ? ext(EXPLORER + '/tx/' + r.payTx, '<code>' + short(r.payTx) + '</code>') + (r.secondsToPaid ? '<span class="sub2">' + Math.round(r.secondsToPaid) + ' s after proof</span>' : '')
     : '';
   return '<tr><td class="when" title="' + esc(r.createdAt) + '">' + ago(r.createdAt) + '</td><td data-k="Request">' + what + '</td><td data-k="Result">' + result + '</td><td data-k="zkVerify">' + zk + '</td><td data-k="Payment">' + tx + '</td></tr>';
 }
 async function refresh() {
   try {
     const rs = await (await fetch('/vault/requests')).json();
-    $('logbody').innerHTML = rs.length ? rs.map(row).join('') : '<tr><td colspan="5" class="empty">No requests yet. Try one above.</td></tr>';
+    $('logbody').innerHTML = rs.length ? rs.map(row).join('') : '<tr><td colspan="5" class="empty">No requests yet.</td></tr>';
   } catch {}
 }
 async function rules() {
@@ -539,10 +538,10 @@ async function rules() {
     $('meter').style.width = Math.min(100, Number(BigInt(r.remaining) * 1000n / (BigInt(r.dailyCap) || 1n)) / 10) + '%';
     if (r.paidToday != null) $('paid').textContent = units(r.paidToday);
     $('rulesdot').className = 'dot'; $('netdot').className = 'dot';
-    $('rulesnote').textContent = 'Read from the vault contract every 30 seconds.';
+    $('rulesnote').textContent = 'Live from the vault contract.';
   } catch {
     $('rulesdot').className = 'dot off';
-    $('rulesnote').textContent = 'Can’t reach the chain right now. Retrying every 30 seconds.';
+    $('rulesnote').textContent = 'Chain unreachable. Retrying.';
   }
 }
 function countdown() {
@@ -558,7 +557,7 @@ document.querySelectorAll('[data-ex]').forEach((b) => b.onclick = () => {
   document.querySelectorAll('[data-ex]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   selectTab('tx');
   $('to').value = e.tx.to; $('data').value = e.tx.data; $('value').value = e.tx.value;
-  $('expect').innerHTML = '<b>What should happen <span class="tag ' + e.outcome + '">' + esc(e.tag) + '</span></b>' + esc(e.expect);
+  $('expect').innerHTML = '<b>Expected <span class="tag ' + e.outcome + '">' + esc(e.tag) + '</span></b>' + esc(e.expect);
   $('expect').hidden = false; $('msgTx').textContent = '';
   if (window.matchMedia('(max-width: 920px)').matches) $('pane-tx').scrollIntoView({ block: 'start' });
 });
@@ -598,7 +597,7 @@ async function post(body, btn, msg, done) {
     const res = await fetch('/vault/requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const out = await res.json();
     if (res.ok) {
-      msg.innerHTML = 'Queued <code>' + esc(out.id.slice(0, 8)) + '</code>. <a href="#log">Watch it in the log</a>';
+      msg.innerHTML = 'Queued. <a href="#log">View in log</a>';
       if (done) done();
     } else msg.textContent = out.error || 'Request failed';
     refresh();
