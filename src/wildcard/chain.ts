@@ -4,6 +4,7 @@ import {
   ContractFunctionRevertedError,
   createPublicClient,
   createWalletClient,
+  fallback,
   http,
   parseAbi,
   type Address,
@@ -118,13 +119,16 @@ export class VaultChain {
   constructor(
     readonly vault: Address,
     chainId: number,
-    rpcUrl: string,
+    rpcUrl: string | string[],
     privateKey: Hex,
   ) {
     this.chain = chainFor(chainId);
     this.account = privateKeyToAccount(privateKey);
-    this.publicClient = createPublicClient({ chain: this.chain, transport: http(rpcUrl) }) as PublicClient;
-    this.wallet = createWalletClient({ chain: this.chain, transport: http(rpcUrl), account: this.account });
+    // Several URLs: try them in order, so one public RPC going down doesn't stop the vault.
+    const urls = [rpcUrl].flat();
+    const transport = urls.length > 1 ? fallback(urls.map((u) => http(u))) : http(urls[0]);
+    this.publicClient = createPublicClient({ chain: this.chain, transport }) as PublicClient;
+    this.wallet = createWalletClient({ chain: this.chain, transport, account: this.account });
   }
 
   private read<T>(functionName: string, args: unknown[] = []): Promise<T> {

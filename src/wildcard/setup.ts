@@ -10,6 +10,11 @@ import { chainFor, VaultChain, VaultChainPort } from './chain.js';
 import { createClaudeIntake } from './intake.js';
 import type { VaultPublicInfo } from './page.js';
 import { parsePolicy, policyCommitment } from './policy.js';
+
+const BACKUP_RPC: Record<number, string[]> = {
+  84532: ['https://base-sepolia-rpc.publicnode.com'],
+  8453: ['https://base-rpc.publicnode.com'],
+};
 import { Kurier } from './zkverify.js';
 
 const KURIER_URL: Record<number, string> = {
@@ -32,7 +37,8 @@ export function loadVault(
     };
     const chainId = Number(env.WILDCARD_CHAIN_ID ?? 84532);
     const chain = chainFor(chainId);
-    const rpc = env.WILDCARD_RPC_URL?.trim() || chain.rpcUrls.default.http[0];
+    // The chain's public RPC, then a second public one, since either can go down (sepolia.base.org returned 503s on 16 Nov).
+    const rpc = env.WILDCARD_RPC_URL?.trim() || [chain.rpcUrls.default.http[0], ...(BACKUP_RPC[chainId] ?? [])];
     const kurierKey = chainId === 8453 ? need('KURIER_API_KEY') : need('KURIER_TESTNET_API_KEY');
     const policy = parsePolicy(need('WILDCARD_POLICY'));
     const vkHash = need('WILDCARD_VK_HASH') as Hex;
